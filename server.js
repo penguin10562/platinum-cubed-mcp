@@ -201,119 +201,96 @@ async function saveApexClass(session, name, body, existingId) {
   }
 }
 
-// ── Metadata API helper ───────────────────────────────────────────────────────
-const JSZip = null; // We build the zip manually using base64
-
+// ── Metadata API helper (SOAP deploy) ────────────────────────────────────────
 async function sfDeployMetadata(session, files) {
-  // Build a zip in-memory using Node.js built-ins
-  // files = [{ path: 'objects/Foo__c.object-meta.xml', content: '...' }, ...]
-  // We use the Metadata REST API deploy endpoint
-
-  // Build zip buffer manually (stored format)
+  // Build zip in-memory (stored/uncompressed, pure Node.js)
   function crc32(buf) {
-    const table = (() => {
-      const t = new Uint32Array(256);
-      for (let i = 0; i < 256; i++) {
-        let c = i;
-        for (let j = 0; j < 8; j++) c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
-        t[i] = c;
-      }
-      return t;
-    })();
+    const t = new Uint32Array(256);
+    for (let i = 0; i < 256; i++) { let c = i; for (let j = 0; j < 8; j++) c = (c&1)?(0xEDB88320^(c>>>1)):(c>>>1); t[i]=c; }
     let crc = 0xFFFFFFFF;
-    for (let i = 0; i < buf.length; i++) crc = table[(crc ^ buf[i]) & 0xFF] ^ (crc >>> 8);
-    return (crc ^ 0xFFFFFFFF) >>> 0;
+    for (let i = 0; i < buf.length; i++) crc = t[(crc^buf[i])&0xFF]^(crc>>>8);
+    return (crc^0xFFFFFFFF)>>>0;
   }
+  const u32 = n => { const b=Buffer.alloc(4); b.writeUInt32LE(n,0); return b; };
+  const u16 = n => { const b=Buffer.alloc(2); b.writeUInt16LE(n,0); return b; };
 
-  function writeUInt32LE(n) {
-    const b = Buffer.alloc(4); b.writeUInt32LE(n, 0); return b;
-  }
-  function writeUInt16LE(n) {
-    const b = Buffer.alloc(2); b.writeUInt16LE(n, 0); return b;
-  }
-
-  const localHeaders = [];
-  const centralHeaders = [];
-  let offset = 0;
-
+  const locals = [], centrals = [];
+  let off = 0;
   for (const file of files) {
-    const nameBuf    = Buffer.from(file.path, 'utf8');
-    const dataBuf    = Buffer.from(file.content, 'utf8');
-    const crc        = crc32(dataBuf);
-    const localHeader = Buffer.concat([
-      Buffer.from([0x50,0x4B,0x03,0x04]),
-      writeUInt16LE(20),   // version needed
-      writeUInt16LE(0),    // flags
-      writeUInt16LE(0),    // compression (stored)
-      writeUInt16LE(0),    // mod time
-      writeUInt16LE(0),    // mod date
-      writeUInt32LE(crc),
-      writeUInt32LE(dataBuf.length),
-      writeUInt32LE(dataBuf.length),
-      writeUInt16LE(nameBuf.length),
-      writeUInt16LE(0),
-      nameBuf,
-      dataBuf
-    ]);
-    localHeaders.push(localHeader);
-
-    const centralHeader = Buffer.concat([
-      Buffer.from([0x50,0x4B,0x01,0x02]),
-      writeUInt16LE(20),   // version made by
-      writeUInt16LE(20),   // version needed
-      writeUInt16LE(0),    // flags
-      writeUInt16LE(0),    // compression
-      writeUInt16LE(0),    // mod time
-      writeUInt16LE(0),    // mod date
-      writeUInt32LE(crc),
-      writeUInt32LE(dataBuf.length),
-      writeUInt32LE(dataBuf.length),
-      writeUInt16LE(nameBuf.length),
-      writeUInt16LE(0),    // extra len
-      writeUInt16LE(0),    // comment len
-      writeUInt16LE(0),    // disk start
-      writeUInt16LE(0),    // int attr
-      writeUInt32LE(0),    // ext attr
-      writeUInt32LE(offset),
-      nameBuf
-    ]);
-    centralHeaders.push(centralHeader);
-    offset += localHeader.length;
+    const name = Buffer.from(file.path,'utf8');
+    const data = Buffer.from(file.content,'utf8');
+    const crc  = crc32(data);
+    const lh = Buffer.concat([Buffer.from([0x50,0x4B,0x03,0x04]),u16(20),u16(0),u16(0),u16(0),u16(0),u32(crc),u32(data.length),u32(data.length),u16(name.length),u16(0),name,data]);
+    locals.push(lh);
+    centrals.push(Buffer.concat([Buffer.from([0x50,0x4B,0x01,0x02]),u16(20),u16(20),u16(0),u16(0),u16(0),u16(0),u32(crc),u32(data.length),u32(data.length),u16(name.length),u16(0),u16(0),u16(0),u16(0),u32(0),u32(off),name]));
+    off += lh.length;
   }
+  const cd = Buffer.concat(centrals);
+  const eocd = Buffer.concat([Buffer.from([0x50,0x4B,0x05,0x06]),u16(0),u16(0),u16(files.length),u16(files.length),u32(cd.length),u32(off),u16(0)]);
+  const zipB64 = Buffer.concat([...locals,cd,eocd]).toString('base64');
 
-  const centralDir   = Buffer.concat(centralHeaders);
-  const eocd = Buffer.concat([
-    Buffer.from([0x50,0x4B,0x05,0x06]),
-    writeUInt16LE(0),
-    writeUInt16LE(0),
-    writeUInt16LE(files.length),
-    writeUInt16LE(files.length),
-    writeUInt32LE(centralDir.length),
-    writeUInt32LE(offset),
-    writeUInt16LE(0)
-  ]);
+  // SOAP deploy via Metadata API
+  const metadataUrl = session.instanceUrl + '/services/Soap/m/' + API_VER_NUM;
+  const soapBody = `<?xml version="1.0" encoding="utf-8"?>
+<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/" xmlns:met="http://soap.sforce.com/2006/04/metadata">
+  <soapenv:Header>
+    <met:CallOptions><met:client>PlatinumCubedMCP</met:client></met:CallOptions>
+    <met:SessionHeader><met:sessionId>${session.accessToken}</met:sessionId></met:SessionHeader>
+  </soapenv:Header>
+  <soapenv:Body>
+    <met:deploy>
+      <met:ZipFile>${zipB64}</met:ZipFile>
+      <met:DeployOptions>
+        <met:allowMissingFiles>false</met:allowMissingFiles>
+        <met:autoUpdatePackage>false</met:autoUpdatePackage>
+        <met:checkOnly>false</met:checkOnly>
+        <met:ignoreWarnings>true</met:ignoreWarnings>
+        <met:purgeOnDelete>false</met:purgeOnDelete>
+        <met:rollbackOnError>true</met:rollbackOnError>
+        <met:singlePackage>true</met:singlePackage>
+        <met:testLevel>NoTestRun</met:testLevel>
+      </met:DeployOptions>
+    </met:deploy>
+  </soapenv:Body>
+</soapenv:Envelope>`;
 
-  const zipBuf = Buffer.concat([...localHeaders, centralDir, eocd]);
-  const zipB64 = zipBuf.toString('base64');
+  const deployRes = await request({
+    url: metadataUrl, method: 'POST',
+    headers: { 'Content-Type': 'text/xml; charset=utf-8', SOAPAction: '""' }
+  }, soapBody);
 
-  // POST to Metadata REST deploy
-  const deployRes = await sfRequest(session, 'POST',
-    `/services/data/${API_VERSION}/metadata/deployRequest`,
-    { zipFile: zipB64, options: { allowMissingFiles: false, autoUpdatePackage: false, checkOnly: false, ignoreWarnings: true, purgeOnDelete: false, rollbackOnError: true, runTests: [], singlePackage: true, testLevel: 'NoTestRun' } }
-  );
-  if (deployRes.status !== 201 && deployRes.status !== 200) throw new Error('Deploy failed: ' + JSON.stringify(deployRes.body));
-  const jobId = deployRes.body.id;
+  // Extract async job ID from SOAP response
+  const jobMatch = deployRes.raw.match(/<id>([^<]+)<\/id>/);
+  if (!jobMatch) throw new Error('Deploy SOAP call failed: ' + deployRes.raw.slice(0,500));
+  const jobId = jobMatch[1];
 
-  // Poll for completion
+  // Poll checkDeployStatus
   for (let i = 0; i < 40; i++) {
     await new Promise(r => setTimeout(r, 3000));
-    const statusRes = await sfRequest(session, 'GET', `/services/data/${API_VERSION}/metadata/deployRequest/${jobId}?includeDetails=true`);
-    const d = statusRes.body.deployResult || statusRes.body;
-    if (d.done) {
-      if (d.success) return { success: true, status: d.status, numberComponentsDeployed: d.numberComponentsDeployed };
-      const errs = (d.details && d.details.componentFailures) || [];
-      const msg  = Array.isArray(errs) ? errs.map(e => `${e.fileName}: ${e.problem}`).join('\n') : JSON.stringify(d);
-      throw new Error('Deployment failed:\n' + msg);
+    const pollBody = `<?xml version="1.0" encoding="utf-8"?>
+<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/" xmlns:met="http://soap.sforce.com/2006/04/metadata">
+  <soapenv:Header>
+    <met:SessionHeader><met:sessionId>${session.accessToken}</met:sessionId></met:SessionHeader>
+  </soapenv:Header>
+  <soapenv:Body>
+    <met:checkDeployStatus>
+      <met:asyncProcessId>${jobId}</met:asyncProcessId>
+      <met:includeDetails>true</met:includeDetails>
+    </met:checkDeployStatus>
+  </soapenv:Body>
+</soapenv:Envelope>`;
+    const pollRes = await request({ url: metadataUrl, method: 'POST', headers: { 'Content-Type': 'text/xml; charset=utf-8', SOAPAction: '""' } }, pollBody);
+    const doneMatch    = pollRes.raw.match(/<done>([^<]+)<\/done>/);
+    const successMatch = pollRes.raw.match(/<success>([^<]+)<\/success>/);
+    const statusMatch  = pollRes.raw.match(/<status>([^<]+)<\/status>/);
+    if (doneMatch && doneMatch[1] === 'true') {
+      if (successMatch && successMatch[1] === 'true') {
+        const deployed = (pollRes.raw.match(/<numberComponentsDeployed>([^<]+)<\/numberComponentsDeployed>/) || [])[1] || '?';
+        return { success: true, status: statusMatch && statusMatch[1], numberComponentsDeployed: deployed };
+      }
+      // Extract errors
+      const errMsgs = [...pollRes.raw.matchAll(/<problem>([^<]+)<\/problem>/g)].map(m=>m[1]);
+      throw new Error('Deployment failed:\n' + (errMsgs.join('\n') || pollRes.raw.slice(0,800)));
     }
   }
   throw new Error('Metadata deploy timed out.');
