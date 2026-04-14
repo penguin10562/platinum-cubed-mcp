@@ -422,24 +422,19 @@ async function handleTool(session, name, args) {
           else if (parts[0] === 'objects' && parts[2] === 'fields') { types['CustomField'] = types['CustomField'] || []; types['CustomField'].push(parts[1] + '.' + parts[3].replace('.field-meta.xml','')); }
           else if (parts[0] === 'objects' && parts.length === 3) { types['CustomObject'] = types['CustomObject'] || []; types['CustomObject'].push(parts[1]); }
         }
-        const lines = [];
+        const typeLines = [];
         for (const [t, members] of Object.entries(types)) {
-          lines.push('  <types>');
-          for (const m of members) lines.push('    <members>' + m + '</members>');
-          lines.push('    <name>' + t + '</name>');
-          lines.push('  </types>');
+          typeLines.push('  <types>');
+          for (const m of members) typeLines.push('    <members>' + m + '</members>');
+          typeLines.push('    <name>' + t + '</name>');
+          typeLines.push('  </types>');
         }
-        return '<?xml version="1.0" encoding="UTF-8"?>
-<Package xmlns="http://soap.sforce.com/2006/04/metadata">
-' + lines.join('
-') + '
-  <version>' + API_VER_NUM + '</version>
-</Package>';
+        return '<?xml version="1.0" encoding="UTF-8"?>\n<Package xmlns="http://soap.sforce.com/2006/04/metadata">\n' + typeLines.join('\n') + '\n  <version>' + API_VER_NUM + '</version>\n</Package>';
       })();
       const allFiles = files.some(f => f.path === 'package.xml') ? files : [...files, { path: 'package.xml', content: pkgXml }];
       return text(await sfDeployMetadata(session, allFiles));
     }
-        default: throw new Error('Unknown tool: ' + name);
+            default: throw new Error('Unknown tool: ' + name);
   }
 }
 
