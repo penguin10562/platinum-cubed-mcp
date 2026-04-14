@@ -414,26 +414,32 @@ async function handleTool(session, name, args) {
     }
     case 'sf_deploy_metadata': {
       const files = args.files || [];
-      // Auto-generate package.xml if not provided
       const pkgXml = args.package_xml || (() => {
-        // Infer metadata types from file paths
         const types = {};
         for (const f of files) {
           const parts = f.path.split('/');
-          // e.g. objects/MyObj__c/MyObj__c.object-meta.xml  -> CustomObject
-          // e.g. objects/MyObj__c/fields/MyField__c.field-meta.xml -> CustomField
-          if (parts[0] === 'objects' && parts.length === 2) { types['CustomObject'] = types['CustomObject'] || []; types['CustomObject'].push(parts[1].replace('.object-meta.xml','')); }
+          if (parts[0] === 'objects' && parts.length === 2) { types['CustomObject'] = types['CustomObject'] || []; types['CustomObject'].push(parts[1].replace('.object-meta.xml','').replace('.object','')); }
           else if (parts[0] === 'objects' && parts[2] === 'fields') { types['CustomField'] = types['CustomField'] || []; types['CustomField'].push(parts[1] + '.' + parts[3].replace('.field-meta.xml','')); }
+          else if (parts[0] === 'objects' && parts.length === 3) { types['CustomObject'] = types['CustomObject'] || []; types['CustomObject'].push(parts[1]); }
         }
-        const typeXml = Object.entries(types).map(([t,members]) =>
-          `    <types>\n${members.map(m=>`        <members>${m}</members>`).join('\n')}\n        <name>${t}</name>\n    </types>`
-        ).join('\n');
-        return `<?xml version="1.0" encoding="UTF-8"?>\n<Package xmlns="http://soap.sforce.com/2006/04/metadata">\n${typeXml}\n    <version>${API_VER_NUM}</version>\n</Package>`;
+        const lines = [];
+        for (const [t, members] of Object.entries(types)) {
+          lines.push('  <types>');
+          for (const m of members) lines.push('    <members>' + m + '</members>');
+          lines.push('    <name>' + t + '</name>');
+          lines.push('  </types>');
+        }
+        return '<?xml version="1.0" encoding="UTF-8"?>
+<Package xmlns="http://soap.sforce.com/2006/04/metadata">
+' + lines.join('
+') + '
+  <version>' + API_VER_NUM + '</version>
+</Package>';
       })();
-      const allFiles = [...files, { path: 'package.xml', content: pkgXml }];
+      const allFiles = files.some(f => f.path === 'package.xml') ? files : [...files, { path: 'package.xml', content: pkgXml }];
       return text(await sfDeployMetadata(session, allFiles));
     }
-    default: throw new Error('Unknown tool: ' + name);
+        default: throw new Error('Unknown tool: ' + name);
   }
 }
 
