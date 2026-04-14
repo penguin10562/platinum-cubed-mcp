@@ -201,6 +201,124 @@ async function saveApexClass(session, name, body, existingId) {
   }
 }
 
+// ── Metadata API helper ───────────────────────────────────────────────────────
+const JSZip = null; // We build the zip manually using base64
+
+async function sfDeployMetadata(session, files) {
+  // Build a zip in-memory using Node.js built-ins
+  // files = [{ path: 'objects/Foo__c.object-meta.xml', content: '...' }, ...]
+  // We use the Metadata REST API deploy endpoint
+
+  // Build zip buffer manually (stored format)
+  function crc32(buf) {
+    const table = (() => {
+      const t = new Uint32Array(256);
+      for (let i = 0; i < 256; i++) {
+        let c = i;
+        for (let j = 0; j < 8; j++) c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
+        t[i] = c;
+      }
+      return t;
+    })();
+    let crc = 0xFFFFFFFF;
+    for (let i = 0; i < buf.length; i++) crc = table[(crc ^ buf[i]) & 0xFF] ^ (crc >>> 8);
+    return (crc ^ 0xFFFFFFFF) >>> 0;
+  }
+
+  function writeUInt32LE(n) {
+    const b = Buffer.alloc(4); b.writeUInt32LE(n, 0); return b;
+  }
+  function writeUInt16LE(n) {
+    const b = Buffer.alloc(2); b.writeUInt16LE(n, 0); return b;
+  }
+
+  const localHeaders = [];
+  const centralHeaders = [];
+  let offset = 0;
+
+  for (const file of files) {
+    const nameBuf    = Buffer.from(file.path, 'utf8');
+    const dataBuf    = Buffer.from(file.content, 'utf8');
+    const crc        = crc32(dataBuf);
+    const localHeader = Buffer.concat([
+      Buffer.from([0x50,0x4B,0x03,0x04]),
+      writeUInt16LE(20),   // version needed
+      writeUInt16LE(0),    // flags
+      writeUInt16LE(0),    // compression (stored)
+      writeUInt16LE(0),    // mod time
+      writeUInt16LE(0),    // mod date
+      writeUInt32LE(crc),
+      writeUInt32LE(dataBuf.length),
+      writeUInt32LE(dataBuf.length),
+      writeUInt16LE(nameBuf.length),
+      writeUInt16LE(0),
+      nameBuf,
+      dataBuf
+    ]);
+    localHeaders.push(localHeader);
+
+    const centralHeader = Buffer.concat([
+      Buffer.from([0x50,0x4B,0x01,0x02]),
+      writeUInt16LE(20),   // version made by
+      writeUInt16LE(20),   // version needed
+      writeUInt16LE(0),    // flags
+      writeUInt16LE(0),    // compression
+      writeUInt16LE(0),    // mod time
+      writeUInt16LE(0),    // mod date
+      writeUInt32LE(crc),
+      writeUInt32LE(dataBuf.length),
+      writeUInt32LE(dataBuf.length),
+      writeUInt16LE(nameBuf.length),
+      writeUInt16LE(0),    // extra len
+      writeUInt16LE(0),    // comment len
+      writeUInt16LE(0),    // disk start
+      writeUInt16LE(0),    // int attr
+      writeUInt32LE(0),    // ext attr
+      writeUInt32LE(offset),
+      nameBuf
+    ]);
+    centralHeaders.push(centralHeader);
+    offset += localHeader.length;
+  }
+
+  const centralDir   = Buffer.concat(centralHeaders);
+  const eocd = Buffer.concat([
+    Buffer.from([0x50,0x4B,0x05,0x06]),
+    writeUInt16LE(0),
+    writeUInt16LE(0),
+    writeUInt16LE(files.length),
+    writeUInt16LE(files.length),
+    writeUInt32LE(centralDir.length),
+    writeUInt32LE(offset),
+    writeUInt16LE(0)
+  ]);
+
+  const zipBuf = Buffer.concat([...localHeaders, centralDir, eocd]);
+  const zipB64 = zipBuf.toString('base64');
+
+  // POST to Metadata REST deploy
+  const deployRes = await sfRequest(session, 'POST',
+    `/services/data/${API_VERSION}/metadata/deployRequest`,
+    { zipFile: zipB64, options: { allowMissingFiles: false, autoUpdatePackage: false, checkOnly: false, ignoreWarnings: true, purgeOnDelete: false, rollbackOnError: true, runTests: [], singlePackage: true, testLevel: 'NoTestRun' } }
+  );
+  if (deployRes.status !== 201 && deployRes.status !== 200) throw new Error('Deploy failed: ' + JSON.stringify(deployRes.body));
+  const jobId = deployRes.body.id;
+
+  // Poll for completion
+  for (let i = 0; i < 40; i++) {
+    await new Promise(r => setTimeout(r, 3000));
+    const statusRes = await sfRequest(session, 'GET', `/services/data/${API_VERSION}/metadata/deployRequest/${jobId}?includeDetails=true`);
+    const d = statusRes.body.deployResult || statusRes.body;
+    if (d.done) {
+      if (d.success) return { success: true, status: d.status, numberComponentsDeployed: d.numberComponentsDeployed };
+      const errs = (d.details && d.details.componentFailures) || [];
+      const msg  = Array.isArray(errs) ? errs.map(e => `${e.fileName}: ${e.problem}`).join('\n') : JSON.stringify(d);
+      throw new Error('Deployment failed:\n' + msg);
+    }
+  }
+  throw new Error('Metadata deploy timed out.');
+}
+
 // ── Tool definitions ──────────────────────────────────────────────────────────
 const TOOLS_READONLY = [
   { name: 'sf_query',        description: 'Run a SOQL SELECT query.',
@@ -242,7 +360,14 @@ const TOOLS_FULL = [
   { name: 'sf_deploy_flow', description: 'Deploy a flow via Metadata API.',
     inputSchema: { type:'object', properties:{ flow_api_name:{ type:'string' }, flow_xml:{ type:'string' } }, required:['flow_api_name','flow_xml'] } },
   { name: 'sf_activate_flow', description: 'Activate a flow version.',
-    inputSchema: { type:'object', properties:{ flow_api_name:{ type:'string' } }, required:['flow_api_name'] } }
+    inputSchema: { type:'object', properties:{ flow_api_name:{ type:'string' } }, required:['flow_api_name'] } },
+  { name: 'sf_deploy_metadata', description: 'Deploy Salesforce metadata (custom objects, fields, etc.) via the Metadata API. Pass an array of files each with a path and XML content.',
+    inputSchema: { type:'object', properties:{
+      files: { type:'array', description: 'Array of metadata files to deploy', items: {
+        type:'object', properties:{ path:{ type:'string', description:'Metadata file path e.g. objects/Foo__c/Foo__c.object-meta.xml' }, content:{ type:'string', description:'XML content of the file' } }, required:['path','content']
+      }},
+      package_xml: { type:'string', description:'Optional package.xml content. If omitted a default is generated.' }
+    }, required:['files'] } }
 ];
 
 // ── Tool handler ──────────────────────────────────────────────────────────────
@@ -309,6 +434,27 @@ async function handleTool(session, name, args) {
       const def = defRes.records[0];
       await toolingUpdate(session, 'FlowDefinition', def.Id, { ActiveVersionId: def.LatestVersionId });
       return text({ success: true, flow: args.flow_api_name, activatedVersionId: def.LatestVersionId });
+    }
+    case 'sf_deploy_metadata': {
+      const files = args.files || [];
+      // Auto-generate package.xml if not provided
+      const pkgXml = args.package_xml || (() => {
+        // Infer metadata types from file paths
+        const types = {};
+        for (const f of files) {
+          const parts = f.path.split('/');
+          // e.g. objects/MyObj__c/MyObj__c.object-meta.xml  -> CustomObject
+          // e.g. objects/MyObj__c/fields/MyField__c.field-meta.xml -> CustomField
+          if (parts[0] === 'objects' && parts.length === 2) { types['CustomObject'] = types['CustomObject'] || []; types['CustomObject'].push(parts[1].replace('.object-meta.xml','')); }
+          else if (parts[0] === 'objects' && parts[2] === 'fields') { types['CustomField'] = types['CustomField'] || []; types['CustomField'].push(parts[1] + '.' + parts[3].replace('.field-meta.xml','')); }
+        }
+        const typeXml = Object.entries(types).map(([t,members]) =>
+          `    <types>\n${members.map(m=>`        <members>${m}</members>`).join('\n')}\n        <name>${t}</name>\n    </types>`
+        ).join('\n');
+        return `<?xml version="1.0" encoding="UTF-8"?>\n<Package xmlns="http://soap.sforce.com/2006/04/metadata">\n${typeXml}\n    <version>${API_VER_NUM}</version>\n</Package>`;
+      })();
+      const allFiles = [...files, { path: 'package.xml', content: pkgXml }];
+      return text(await sfDeployMetadata(session, allFiles));
     }
     default: throw new Error('Unknown tool: ' + name);
   }
