@@ -316,18 +316,43 @@ async function handleTool(session, name, args) {
 
 // ── OAuth routes ──────────────────────────────────────────────────────────────
 
+// PKCE helpers
+function base64urlEncode(buf) {
+  return buf.toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
+}
+function generateCodeVerifier() {
+  return base64urlEncode(crypto.randomBytes(32));
+}
+function generateCodeChallenge(verifier) {
+  return base64urlEncode(crypto.createHash('sha256').update(verifier).digest());
+}
+
+// In-memory store for PKCE verifiers keyed by state
+const pkceStore = new Map();
+
 // Step 1: redirect to Salesforce login
 app.get('/oauth/start', (req, res) => {
   const tier        = req.query.tier || 'readonly';
   const instanceUrl = req.query.instance_url || 'https://login.salesforce.com';
-  const state       = crypto.randomBytes(16).toString('hex') + '|' + tier + '|' + encodeURIComponent(instanceUrl);
+  const stateToken  = crypto.randomBytes(16).toString('hex');
+  const state       = stateToken + '|' + tier + '|' + encodeURIComponent(instanceUrl);
   const scope       = tier === 'full' ? 'full refresh_token' : 'api refresh_token';
-  const authUrl     = `${instanceUrl}/services/oauth2/authorize?` + new URLSearchParams({
-    response_type: 'code',
-    client_id:     PC_CLIENT_ID,
-    redirect_uri:  CALLBACK_URL,
+
+  // Generate PKCE
+  const codeVerifier  = generateCodeVerifier();
+  const codeChallenge = generateCodeChallenge(codeVerifier);
+  pkceStore.set(stateToken, codeVerifier);
+  // Clean up old entries
+  if (pkceStore.size > 200) pkceStore.delete([...pkceStore.keys()][0]);
+
+  const authUrl = `${instanceUrl}/services/oauth2/authorize?` + new URLSearchParams({
+    response_type:          'code',
+    client_id:              PC_CLIENT_ID,
+    redirect_uri:           CALLBACK_URL,
     scope,
-    state
+    state,
+    code_challenge:         codeChallenge,
+    code_challenge_method:  'S256'
   });
   res.redirect(authUrl);
 });
@@ -338,21 +363,26 @@ app.get('/oauth/callback', async (req, res) => {
   if (error) return res.status(400).send(`OAuth error: ${error} — ${error_description}`);
   if (!code || !state) return res.status(400).send('Missing code or state');
 
-  const [, tier, encodedInstanceUrl] = state.split('|');
-  const instanceUrl = decodeURIComponent(encodedInstanceUrl);
+  const [stateToken, tier, encodedInstanceUrl] = state.split('|');
+  const instanceUrl  = decodeURIComponent(encodedInstanceUrl);
+  const codeVerifier = pkceStore.get(stateToken);
+  pkceStore.delete(stateToken);
 
   try {
-    const tokenRes = await request({
-      url: `${instanceUrl}/services/oauth2/token`,
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
-    }, new URLSearchParams({
+    const tokenParams = {
       grant_type:    'authorization_code',
       code,
       client_id:     PC_CLIENT_ID,
       client_secret: PC_CLIENT_SECRET,
       redirect_uri:  CALLBACK_URL
-    }).toString());
+    };
+    if (codeVerifier) tokenParams.code_verifier = codeVerifier;
+
+    const tokenRes = await request({
+      url: `${instanceUrl}/services/oauth2/token`,
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
+    }, new URLSearchParams(tokenParams).toString());
 
     if (tokenRes.status !== 200 || !tokenRes.body.access_token) {
       return res.status(400).send('Token exchange failed: ' + JSON.stringify(tokenRes.body));
