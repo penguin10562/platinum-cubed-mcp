@@ -248,7 +248,7 @@ async function sfDeployMetadata(session, files) {
         <met:purgeOnDelete>false</met:purgeOnDelete>
         <met:rollbackOnError>true</met:rollbackOnError>
         <met:singlePackage>true</met:singlePackage>
-        <met:testLevel>RunLocalTests</met:testLevel>
+        <met:testLevel>RunSpecifiedTests</met:testLevel>
       </met:DeployOptions>
     </met:deploy>
   </soapenv:Body>
