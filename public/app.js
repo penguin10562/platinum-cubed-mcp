@@ -35,8 +35,13 @@ async function doCheckout(tier) {
     });
     const data = await res.json();
     if (data.tier_mismatch) {
-      alert(data.message);
-      window.location.href = '/manage';
+      const upgrade = confirm('You currently have a Read Only subscription.\n\nWould you like to upgrade to Full Access?');
+      if (upgrade) {
+        window.location.href = '/checkout/upgrade?email=' + encodeURIComponent(email) + '&instance_url=' + encodeURIComponent(instanceUrl) + '&billing=' + billing;
+      } else {
+        btn.textContent = 'Get started';
+        btn.disabled = false;
+      }
     } else if (data.already_subscribed) {
       window.location.href = '/oauth/start?tier=' + data.tier + '&instance_url=' + encodeURIComponent(data.instance_url || 'https://login.salesforce.com') + '&email=' + encodeURIComponent(email);
     } else if (data.url) {

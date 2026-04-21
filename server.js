@@ -294,7 +294,7 @@ app.post('/checkout', async (req, res) => {
 
           // If they have readonly but are requesting full, deny it
           if (tier === 'full' && subTier === 'readonly') {
-            return res.json({ tier_mismatch: true, subscribed_tier: 'readonly', message: 'Your current subscription is Read Only. Please upgrade to Full Access to use this tier.' });
+            return res.json({ tier_mismatch: true, subscribed_tier: 'readonly', upgrade_url: SERVER_URL + '/?upgrade=true', message: 'Your current subscription is Read Only. Upgrade to Full Access?' });
           }
 
           // Use their subscribed tier (don't let them self-upgrade)
