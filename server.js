@@ -706,6 +706,38 @@ app.get('/portal', async (req, res) => {
   }
 });
 
+// ── Upgrade subscription ──────────────────────────────────────────────────────
+app.get('/checkout/upgrade', async (req, res) => {
+  const { email, instance_url, billing } = req.query;
+  if (!stripe || !email) return res.redirect('/');
+  try {
+    const customers = await stripe.customers.list({ email: email.trim().toLowerCase(), limit: 1 });
+    const customerId = customers.data && customers.data[0] ? customers.data[0].id : undefined;
+    const amount = billing === 'annual' ? 44000 : 4000;
+    const session = await stripe.checkout.sessions.create({
+      payment_method_types: ['card'],
+      mode: billing === 'annual' ? 'payment' : 'subscription',
+      customer: customerId,
+      line_items: [{
+        price_data: {
+          currency: 'usd',
+          product_data: { name: 'Platinum Cubed MCP — Full Access Upgrade' },
+          unit_amount: amount,
+          ...(billing === 'monthly' ? { recurring: { interval: 'month' } } : {})
+        },
+        quantity: 1
+      }],
+      success_url: SERVER_URL + '/checkout/success?session_id={CHECKOUT_SESSION_ID}',
+      cancel_url: SERVER_URL + '/',
+      metadata: { tier: 'full', billing, instance_url: instance_url || '' },
+      subscription_data: { metadata: { tier: 'full', billing } }
+    });
+    res.redirect(session.url);
+  } catch(err) {
+    res.redirect('/?error=' + encodeURIComponent(err.message));
+  }
+});
+
 app.get('/health', (req, res) => res.json({ status: 'ok', sessions: sessions.size, paidUsers: paidUsers.size }));
 
 app.listen(PORT, () => console.log(`Platinum Cubed MCP running on port ${PORT}`));
