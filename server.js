@@ -276,8 +276,32 @@ async function handleTool(session, name, args) {
 
 // ── Stripe: create checkout session ──────────────────────────────────────────
 app.post('/checkout', async (req, res) => {
-  const { tier, billing, instance_url } = req.body;
+  const { tier, billing, instance_url, email } = req.body;
   if (!stripe) return res.status(500).json({ error: 'Stripe not configured' });
+
+  // Check if user already has an active subscription
+  if (email) {
+    try {
+      const customers = await stripe.customers.list({ email: email.trim().toLowerCase(), limit: 1 });
+      if (customers.data && customers.data.length > 0) {
+        const customer = customers.data[0];
+        const subscriptions = await stripe.subscriptions.list({ customer: customer.id, status: 'active', limit: 1 });
+        if (subscriptions.data && subscriptions.data.length > 0) {
+          // Already subscribed — send them to portal
+          const portalConfig = process.env.STRIPE_PORTAL_CONFIG || undefined;
+          const portalSession = await stripe.billingPortal.sessions.create({
+            customer: customer.id,
+            return_url: SERVER_URL,
+            ...(portalConfig ? { configuration: portalConfig } : {})
+          });
+          return res.json({ portal_url: portalSession.url });
+        }
+      }
+    } catch(err) {
+      // If check fails, proceed to checkout normally
+      console.error('Subscription check error:', err.message);
+    }
+  }
 
   const priceKey = `${tier}_${billing}`; // e.g. readonly_monthly
   const priceId  = PRICES[priceKey];
@@ -538,7 +562,7 @@ app.get('/', (req, res) => {
 </style></head><body>
 <nav>
   <div class="logo">Platinum <span>Cubed</span> MCP</div>
-  <a href="/manage" style="font-size:13px;color:#4A9EE0;text-decoration:none;">Manage subscription</a>
+  <div style="font-size:13px;color:#556;">Salesforce × Claude</div>
 </nav>
 <div class="hero">
   <h1>Connect <span>Salesforce</span> to Claude</h1>
@@ -610,22 +634,29 @@ function setPrice(tier, billing, btn) {
 async function checkout(tier) {
   try {
     const billing = selected[tier === 'full' ? 'full' : 'ro'];
-    const inputId = tier === 'full' ? 'full-url' : 'ro-url';
-    const instanceUrl = document.getElementById(inputId).value.trim() || 'https://login.salesforce.com';
+    const urlInputId   = tier === 'full' ? 'full-url'   : 'ro-url';
+    const emailInputId = tier === 'full' ? 'full-email' : 'ro-email';
+    const instanceUrl = document.getElementById(urlInputId).value.trim() || 'https://login.salesforce.com';
+    const email = document.getElementById(emailInputId).value.trim();
+    if (!email) { alert('Please enter your email address.'); return; }
     const btn = event.target;
-    btn.textContent = 'Redirecting to checkout...';
+    btn.textContent = 'Checking...';
     btn.disabled = true;
     const res = await fetch('/checkout', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ tier, billing, instance_url: instanceUrl })
+      body: JSON.stringify({ tier, billing, instance_url: instanceUrl, email })
     });
     const data = await res.json();
-    if (data.url) {
+    if (data.portal_url) {
+      // Already subscribed — send to portal
+      alert('You already have an active subscription! Redirecting to your account portal.');
+      window.location.href = data.portal_url;
+    } else if (data.url) {
       window.location.href = data.url;
     } else {
       alert('Error: ' + (data.error || 'Unknown error'));
-      btn.textContent = tier === 'full' ? 'Get started →' : 'Get started →';
+      btn.textContent = 'Get started →';
       btn.disabled = false;
     }
   } catch(err) {
