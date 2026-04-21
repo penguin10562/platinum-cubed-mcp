@@ -531,7 +531,7 @@ app.get('/', (req, res) => {
   res.send(`<!DOCTYPE html><html><head>
 <title>Platinum Cubed MCP — Salesforce for Claude</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<script src="https://js.stripe.com/v3/"></script>
+
 <style>
   *{box-sizing:border-box;margin:0;padding:0;}
   body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#0B1829;color:#e0e8f0;min-height:100vh;}
