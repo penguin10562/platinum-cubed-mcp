@@ -623,7 +623,7 @@ app.get('/', (req, res) => {
 
 </div>
 <footer>Built by <a href="https://platinumcubed.com" target="_blank">Platinum Cubed</a> · Salesforce consulting & AI innovation</footer>
-<script src="/app.js">
+<script src="/app.js"></script>
 const pricing = {
   ro:   { monthly: { price: '$20', sub: 'per month', billing: 'monthly' }, annual: { price: '$220', sub: 'per year ($18.33/mo)', billing: 'annual' } },
   full: { monthly: { price: '$40', sub: 'per month', billing: 'monthly' }, annual: { price: '$440', sub: 'per year ($36.67/mo)', billing: 'annual' } }
