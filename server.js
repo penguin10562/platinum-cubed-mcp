@@ -610,7 +610,8 @@ function setPrice(tier, billing, btn) {
 async function checkout(tier) {
   try {
     const billing = selected[tier === 'full' ? 'full' : 'ro'];
-    const instanceUrl = document.getElementById(tier+'-url').value.trim() || 'https://login.salesforce.com';
+    const inputId = tier === 'full' ? 'full-url' : 'ro-url';
+    const instanceUrl = document.getElementById(inputId).value.trim() || 'https://login.salesforce.com';
     const btn = event.target;
     btn.textContent = 'Redirecting to checkout...';
     btn.disabled = true;
