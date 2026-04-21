@@ -588,6 +588,7 @@ app.get('/', (req, res) => {
       <li>No changes to your data</li>
     </ul>
     <input class="url-input" id="ro-url" type="text" placeholder="https://yourorg.my.salesforce.com" />
+    <input class="url-input" id="ro-email" type="email" placeholder="your@email.com" />
     <button class="btn btn-blue" onclick="checkout('readonly')">Get Started →</button>
   </div>
 
@@ -610,6 +611,7 @@ app.get('/', (req, res) => {
       <li>Run Apex tests</li>
     </ul>
     <input class="url-input" id="full-url" type="text" placeholder="https://yourorg.my.salesforce.com" />
+    <input class="url-input" id="full-email" type="email" placeholder="your@email.com" />
     <button class="btn btn-purple" onclick="checkout('full')">Get Started →</button>
   </div>
 
