@@ -595,7 +595,7 @@ app.get('/', (req, res) => {
     </ul>
     <input class="url-input" id="ro-url" type="text" placeholder="https://yourorg.my.salesforce.com" />
     <input class="url-input" id="ro-email" type="email" placeholder="your@email.com" />
-    <button class="btn btn-blue" onclick="checkout('readonly')">Get Started →</button>
+    <button class="btn btn-blue" onclick="checkout(event, 'readonly')">Get Started →</button>
   </div>
 
   <div class="tier featured">
@@ -618,7 +618,7 @@ app.get('/', (req, res) => {
     </ul>
     <input class="url-input" id="full-url" type="text" placeholder="https://yourorg.my.salesforce.com" />
     <input class="url-input" id="full-email" type="email" placeholder="your@email.com" />
-    <button class="btn btn-purple" onclick="checkout('full')">Get Started →</button>
+    <button class="btn btn-purple" onclick="checkout(event, 'full')">Get Started →</button>
   </div>
 
 </div>
@@ -639,7 +639,8 @@ function setPrice(tier, billing, btn) {
   btn.classList.add('active');
 }
 
-async function checkout(tier) {
+async function checkout(ev, tier) {
+  const event = ev;
   try {
     const billing = selected[tier === 'full' ? 'full' : 'ro'];
     const urlInputId   = tier === 'full' ? 'full-url'   : 'ro-url';
