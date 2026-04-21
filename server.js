@@ -608,16 +608,29 @@ function setPrice(tier, billing, btn) {
 }
 
 async function checkout(tier) {
-  const billing = selected[tier === 'full' ? 'full' : 'ro'];
-  const instanceUrl = document.getElementById(tier+'-url').value.trim() || 'https://login.salesforce.com';
-  const res = await fetch('/checkout', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ tier, billing, instance_url: instanceUrl })
-  });
-  const data = await res.json();
-  if (data.url) window.location.href = data.url;
-  else alert('Error: ' + (data.error || 'Unknown error'));
+  try {
+    const billing = selected[tier === 'full' ? 'full' : 'ro'];
+    const instanceUrl = document.getElementById(tier+'-url').value.trim() || 'https://login.salesforce.com';
+    const btn = event.target;
+    btn.textContent = 'Redirecting to checkout...';
+    btn.disabled = true;
+    const res = await fetch('/checkout', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tier, billing, instance_url: instanceUrl })
+    });
+    const data = await res.json();
+    if (data.url) {
+      window.location.href = data.url;
+    } else {
+      alert('Error: ' + (data.error || 'Unknown error'));
+      btn.textContent = tier === 'full' ? 'Get started →' : 'Get started →';
+      btn.disabled = false;
+    }
+  } catch(err) {
+    alert('Error: ' + err.message);
+    event.target.disabled = false;
+  }
 }
 </script>
 </body></html>`);
