@@ -568,7 +568,7 @@ app.get('/', (req, res) => {
 </style></head><body>
 <nav>
   <div class="logo">Platinum <span>Cubed</span> MCP</div>
-  <div style="font-size:13px;color:#556;">Salesforce × Claude</div>
+  <a href="/manage" style="font-size:13px;color:#4A9EE0;text-decoration:none;">Manage subscription</a>
 </nav>
 <div class="hero">
   <h1>Connect <span>Salesforce</span> to Claude</h1>
