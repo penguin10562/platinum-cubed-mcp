@@ -667,8 +667,7 @@ async function doCheckout(tier) {
     });
     const data = await res.json();
     if (data.tier_mismatch) {
-      alert(data.message + '\n\nClick OK to manage your subscription.');
-      window.location.href = '/manage';
+
     } else if (data.already_subscribed) {
       window.location.href = '/oauth/start?tier=' + data.tier + '&instance_url=' + encodeURIComponent(data.instance_url || 'https://login.salesforce.com') + '&email=' + encodeURIComponent(email);
     } else if (data.url) {
@@ -812,8 +811,7 @@ async function doCheckout(tier) {
     });
     const data = await res.json();
     if (data.tier_mismatch) {
-      alert(data.message + '\n\nClick OK to manage your subscription.');
-      window.location.href = '/manage';
+
     } else if (data.already_subscribed) {
       window.location.href = '/oauth/start?tier=' + data.tier + '&instance_url=' + encodeURIComponent(data.instance_url || 'https://login.salesforce.com') + '&email=' + encodeURIComponent(email);
     } else if (data.url) {
