@@ -13,6 +13,7 @@ const crypto   = require('crypto');
 const Stripe   = require('stripe');
 
 const app  = express();
+app.use(express.static(__dirname + '/public'));
 const PORT = process.env.PORT || 3000;
 
 // ── Config ────────────────────────────────────────────────────────────────────
