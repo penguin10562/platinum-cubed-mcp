@@ -595,7 +595,7 @@ app.get('/', (req, res) => {
     </ul>
     <input class="url-input" id="ro-url" type="text" placeholder="https://yourorg.my.salesforce.com" />
     <input class="url-input" id="ro-email" type="email" placeholder="your@email.com" />
-    <button class="btn btn-blue" onclick="checkout(event, 'readonly')">Get Started →</button>
+    <button class="btn btn-blue" id="btn-readonly" onclick="doCheckout('readonly')">Get Started →</button>
   </div>
 
   <div class="tier featured">
@@ -618,7 +618,7 @@ app.get('/', (req, res) => {
     </ul>
     <input class="url-input" id="full-url" type="text" placeholder="https://yourorg.my.salesforce.com" />
     <input class="url-input" id="full-email" type="email" placeholder="your@email.com" />
-    <button class="btn btn-purple" onclick="checkout(event, 'full')">Get Started →</button>
+    <button class="btn btn-purple" id="btn-full" onclick="doCheckout('full')">Get Started →</button>
   </div>
 
 </div>
@@ -639,18 +639,27 @@ function setPrice(tier, billing, btn) {
   btn.classList.add('active');
 }
 
-async function checkout(ev, tier) {
-  const event = ev;
+async function doCheckout(tier) {
+  const urlId   = tier === 'full' ? 'full-url'   : 'ro-url';
+  const emailId = tier === 'full' ? 'full-email' : 'ro-email';
+  const btnId   = 'btn-' + tier;
+
+  const urlEl   = document.getElementById(urlId);
+  const emailEl = document.getElementById(emailId);
+  const btn     = document.getElementById(btnId);
+
+  if (!urlEl || !emailEl) { alert('Form fields not found. Please refresh the page.'); return; }
+
+  const instanceUrl = urlEl.value.trim() || 'https://login.salesforce.com';
+  const email = emailEl.value.trim();
+
+  if (!email) { alert('Please enter your email address.'); return; }
+
+  const billing = selected[tier === 'full' ? 'full' : 'ro'];
+  btn.textContent = 'Checking...';
+  btn.disabled = true;
+
   try {
-    const billing = selected[tier === 'full' ? 'full' : 'ro'];
-    const urlInputId   = tier === 'full' ? 'full-url'   : 'ro-url';
-    const emailInputId = tier === 'full' ? 'full-email' : 'ro-email';
-    const instanceUrl = document.getElementById(urlInputId).value.trim() || 'https://login.salesforce.com';
-    const email = document.getElementById(emailInputId).value.trim();
-    if (!email) { alert('Please enter your email address.'); return; }
-    const btn = event.target;
-    btn.textContent = 'Checking...';
-    btn.disabled = true;
     const res = await fetch('/checkout', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -658,12 +667,10 @@ async function checkout(ev, tier) {
     });
     const data = await res.json();
     if (data.tier_mismatch) {
-      alert(data.message + '\n\nClick OK to be taken to the upgrade page.');
+      alert(data.message + '\n\nClick OK to manage your subscription.');
       window.location.href = '/manage';
     } else if (data.already_subscribed) {
-      // Already subscribed — go straight to Salesforce OAuth
-      const connectUrl = '/oauth/start?tier=' + data.tier + '&instance_url=' + encodeURIComponent(data.instance_url || 'https://login.salesforce.com') + '&email=' + encodeURIComponent(email);
-      window.location.href = connectUrl;
+      window.location.href = '/oauth/start?tier=' + data.tier + '&instance_url=' + encodeURIComponent(data.instance_url || 'https://login.salesforce.com') + '&email=' + encodeURIComponent(email);
     } else if (data.url) {
       window.location.href = data.url;
     } else {
@@ -673,10 +680,10 @@ async function checkout(ev, tier) {
     }
   } catch(err) {
     alert('Error: ' + err.message);
-    event.target.disabled = false;
+    btn.textContent = 'Get started →';
+    btn.disabled = false;
   }
-}
-</script>
+}</script>
 </body></html>`);
 });
 
