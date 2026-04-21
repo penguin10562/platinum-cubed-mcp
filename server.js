@@ -287,14 +287,10 @@ app.post('/checkout', async (req, res) => {
         const customer = customers.data[0];
         const subscriptions = await stripe.subscriptions.list({ customer: customer.id, status: 'active', limit: 1 });
         if (subscriptions.data && subscriptions.data.length > 0) {
-          // Already subscribed — send them to portal
-          const portalConfig = process.env.STRIPE_PORTAL_CONFIG || undefined;
-          const portalSession = await stripe.billingPortal.sessions.create({
-            customer: customer.id,
-            return_url: SERVER_URL,
-            ...(portalConfig ? { configuration: portalConfig } : {})
-          });
-          return res.json({ portal_url: portalSession.url });
+          // Already subscribed — skip payment, go straight to Salesforce OAuth
+          const sub = subscriptions.data[0];
+          const subTier = sub.metadata && sub.metadata.tier ? sub.metadata.tier : tier;
+          return res.json({ already_subscribed: true, tier: subTier, instance_url: instance_url || '' });
         }
       }
     } catch(err) {
@@ -650,10 +646,10 @@ async function checkout(tier) {
       body: JSON.stringify({ tier, billing, instance_url: instanceUrl, email })
     });
     const data = await res.json();
-    if (data.portal_url) {
-      // Already subscribed — send to portal
-      alert('You already have an active subscription! Redirecting to your account portal.');
-      window.location.href = data.portal_url;
+    if (data.already_subscribed) {
+      // Already subscribed — go straight to Salesforce OAuth
+      const connectUrl = '/oauth/start?tier=' + data.tier + '&instance_url=' + encodeURIComponent(data.instance_url || 'https://login.salesforce.com') + '&email=' + encodeURIComponent(email);
+      window.location.href = connectUrl;
     } else if (data.url) {
       window.location.href = data.url;
     } else {
