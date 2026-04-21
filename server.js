@@ -292,14 +292,20 @@ app.post('/checkout', async (req, res) => {
           const sub = subscriptions.data[0];
           const subTier = sub.metadata && sub.metadata.tier ? sub.metadata.tier : null;
 
-          // If they have readonly but are requesting full, deny it
-          if (tier === 'full' && subTier === 'readonly') {
-            return res.json({ tier_mismatch: true, subscribed_tier: 'readonly', upgrade_url: SERVER_URL + '/?upgrade=true', message: 'Your current subscription is Read Only. Upgrade to Full Access?' });
+          // Detect tier from price amount if no metadata
+          let detectedTier = subTier;
+          if (!detectedTier && sub.items && sub.items.data && sub.items.data[0]) {
+            const unitAmount = sub.items.data[0].price && sub.items.data[0].price.unit_amount;
+            detectedTier = (unitAmount >= 4000) ? 'full' : 'readonly';
+          }
+          detectedTier = detectedTier || 'readonly';
+
+          // If they have readonly but are requesting full, block it
+          if (tier === 'full' && detectedTier === 'readonly') {
+            return res.json({ tier_mismatch: true, message: 'You have a Read Only subscription. Upgrade to Full Access?' });
           }
 
-          // Use their subscribed tier (don't let them self-upgrade)
-          const allowedTier = subTier || 'readonly';
-          return res.json({ already_subscribed: true, tier: allowedTier, instance_url: instance_url || '' });
+          return res.json({ already_subscribed: true, tier: detectedTier, instance_url: instance_url || '' });
         }
       }
     } catch(err) {
