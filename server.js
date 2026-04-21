@@ -287,10 +287,18 @@ app.post('/checkout', async (req, res) => {
         const customer = customers.data[0];
         const subscriptions = await stripe.subscriptions.list({ customer: customer.id, status: 'active', limit: 1 });
         if (subscriptions.data && subscriptions.data.length > 0) {
-          // Already subscribed — skip payment, go straight to Salesforce OAuth
+          // Already subscribed — validate tier
           const sub = subscriptions.data[0];
-          const subTier = sub.metadata && sub.metadata.tier ? sub.metadata.tier : tier;
-          return res.json({ already_subscribed: true, tier: subTier, instance_url: instance_url || '' });
+          const subTier = sub.metadata && sub.metadata.tier ? sub.metadata.tier : null;
+
+          // If they have readonly but are requesting full, deny it
+          if (tier === 'full' && subTier === 'readonly') {
+            return res.json({ tier_mismatch: true, subscribed_tier: 'readonly', message: 'Your current subscription is Read Only. Please upgrade to Full Access to use this tier.' });
+          }
+
+          // Use their subscribed tier (don't let them self-upgrade)
+          const allowedTier = subTier || tier;
+          return res.json({ already_subscribed: true, tier: allowedTier, instance_url: instance_url || '' });
         }
       }
     } catch(err) {
@@ -332,7 +340,8 @@ app.post('/checkout', async (req, res) => {
       }],
       success_url: `${SERVER_URL}/checkout/success?session_id={CHECKOUT_SESSION_ID}`,
       cancel_url:  `${SERVER_URL}/`,
-      metadata: { tier, billing, instance_url: instance_url || '' }
+      metadata: { tier, billing, instance_url: instance_url || '' },
+      subscription_data: { metadata: { tier, billing } }
     });
 
     pendingCheckouts.set(session.id, { tier, instanceUrl: instance_url || '' });
@@ -346,7 +355,8 @@ app.post('/checkout', async (req, res) => {
     line_items: [{ price: priceId, quantity: 1 }],
     success_url: `${SERVER_URL}/checkout/success?session_id={CHECKOUT_SESSION_ID}`,
     cancel_url:  `${SERVER_URL}/`,
-    metadata: { tier, billing, instance_url: instance_url || '' }
+    metadata: { tier, billing, instance_url: instance_url || '' },
+    subscription_data: { metadata: { tier, billing } }
   });
 
   pendingCheckouts.set(session.id, { tier, instanceUrl: instance_url || '' });
@@ -646,7 +656,10 @@ async function checkout(tier) {
       body: JSON.stringify({ tier, billing, instance_url: instanceUrl, email })
     });
     const data = await res.json();
-    if (data.already_subscribed) {
+    if (data.tier_mismatch) {
+      alert(data.message + '\n\nClick OK to be taken to the upgrade page.');
+      window.location.href = '/manage';
+    } else if (data.already_subscribed) {
       // Already subscribed — go straight to Salesforce OAuth
       const connectUrl = '/oauth/start?tier=' + data.tier + '&instance_url=' + encodeURIComponent(data.instance_url || 'https://login.salesforce.com') + '&email=' + encodeURIComponent(email);
       window.location.href = connectUrl;
