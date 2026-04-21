@@ -298,7 +298,7 @@ app.post('/checkout', async (req, res) => {
           }
 
           // Use their subscribed tier (don't let them self-upgrade)
-          const allowedTier = subTier || tier;
+          const allowedTier = subTier || 'readonly';
           return res.json({ already_subscribed: true, tier: allowedTier, instance_url: instance_url || '' });
         }
       }
