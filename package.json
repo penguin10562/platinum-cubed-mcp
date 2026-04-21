@@ -1,7 +1,7 @@
 {
   "name": "platinum-cubed-mcp",
   "version": "1.0.0",
-  "description": "Platinum Cubed — Salesforce MCP Server",
+  "description": "Platinum Cubed MCP — Salesforce for Claude",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
@@ -10,6 +10,7 @@
     "node": ">=18"
   },
   "dependencies": {
-    "express": "^4.18.2"
+    "express": "^4.18.2",
+    "stripe": "^14.0.0"
   }
 }
