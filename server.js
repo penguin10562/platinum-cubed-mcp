@@ -448,7 +448,46 @@ app.get('/oauth/start', (req, res) => {
 
 app.get('/oauth/callback', async (req, res) => {
   const { code, state, error, error_description } = req.query;
-  if (error) return res.status(400).send(`OAuth error: ${error} — ${error_description}`);
+  if (error) {
+    if (error === 'OAUTH_EC_APP_NOT_FOUND') {
+      return res.send(`<!DOCTYPE html><html><head><title>Package Not Installed — Platinum Cubed MCP</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+  *{box-sizing:border-box;margin:0;padding:0;}
+  body{font-family:-apple-system,sans-serif;background:#0B1829;color:#e0e8f0;min-height:100vh;display:flex;flex-direction:column;}
+  nav{background:#0d1f33;border-bottom:1px solid #1e3a5f;padding:0 40px;height:60px;display:flex;align-items:center;}
+  .logo{font-size:16px;font-weight:600;color:white;}.logo span{color:#4A9EE0;}
+  .center{flex:1;display:flex;align-items:center;justify-content:center;padding:40px 20px;}
+  .card{background:#132035;border:1px solid #1e3a5f;border-radius:16px;padding:40px;max-width:520px;width:100%;text-align:center;}
+  .icon{width:52px;height:52px;background:#FEF9EC;border-radius:50%;display:flex;align-items:center;justify-content:center;margin:0 auto 16px;font-size:24px;}
+  h1{font-size:22px;font-weight:600;margin-bottom:8px;color:#F0C060;}
+  .sub{color:#8aabcc;font-size:14px;margin-bottom:28px;line-height:1.6;}
+  .step{background:#0B1829;border-radius:12px;padding:24px;margin-bottom:16px;text-align:left;}
+  .step-label{color:#4A9EE0;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:0.06em;margin-bottom:8px;}
+  .step p{color:#9ab;font-size:14px;line-height:1.6;margin-bottom:14px;}
+  .btn-blue{display:inline-block;background:#2D7DD2;color:white;padding:12px 22px;border-radius:8px;text-decoration:none;font-size:14px;font-weight:600;}
+  .btn-back{display:inline-block;background:transparent;color:#4A9EE0;padding:12px 22px;border-radius:8px;text-decoration:none;font-size:14px;border:1px solid #2a4a6e;}
+</style></head><body>
+<nav><div class="logo">Platinum <span>Cubed</span> MCP</div></nav>
+<div class="center"><div class="card">
+  <div class="icon">📦</div>
+  <h1>Package Not Installed</h1>
+  <p class="sub">The Platinum Cubed MCP package needs to be installed in your Salesforce org before you can connect. This only takes about 2 minutes!</p>
+  <div class="step">
+    <div class="step-label">Step 1 — Install the Package</div>
+    <p>Click below to install the package in your Salesforce org. Make sure to log into the correct org.</p>
+    <a class="btn-blue" href="https://login.salesforce.com/packaging/installPackage.apexp?p0=04tUb000001DODdIAO" target="_blank">Install Package in Salesforce →</a>
+  </div>
+  <div class="step">
+    <div class="step-label">Step 2 — Come Back and Connect</div>
+    <p>After the package is installed, click below to try connecting again.</p>
+    <a class="btn-back" href="/">Try Again →</a>
+  </div>
+</div></div>
+</body></html>`);
+    }
+    return res.status(400).send(`OAuth error: ${error} — ${error_description}`);
+  }
   if (!code || !state) return res.status(400).send('Missing code or state');
   const parts = state.split('|');
   const stateToken  = parts[0];
