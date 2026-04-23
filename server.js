@@ -404,8 +404,17 @@ app.get('/checkout/success', async (req, res) => {
 <div class="card">
   <h1>🎉 Payment Successful!</h1>
   <p>Thank you! Now let's connect your Salesforce org to Claude.</p>
-  <a class="btn" href="${connectUrl}">Connect Salesforce →</a>
-  ${checkoutSession.customer ? `<p style="margin-top:20px;font-size:13px;color:#9ab;">Want to cancel? <a href="/portal?customer_id=${checkoutSession.customer}" style="color:#4A9EE0;">Manage subscription</a></p>` : ""}
+  <div style="background:#0d1f33;border-radius:12px;padding:24px;margin-bottom:20px;text-align:left;">
+    <p style="color:#4A9EE0;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:0.06em;margin-bottom:12px;">Step 1 — Install Package</p>
+    <p style="color:#9ab;font-size:14px;margin-bottom:16px;line-height:1.6;">Install the Platinum Cubed MCP package in your Salesforce org. This takes about 2 minutes.</p>
+    <a href="https://login.salesforce.com/packaging/installPackage.apexp?p0=04tUb000001DODdIAO" target="_blank" style="display:inline-block;background:#2D7DD2;color:white;padding:11px 20px;border-radius:8px;text-decoration:none;font-size:14px;font-weight:600;">Install Package in Salesforce →</a>
+  </div>
+  <div style="background:#0d1f33;border-radius:12px;padding:24px;margin-bottom:20px;text-align:left;">
+    <p style="color:#4A9EE0;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:0.06em;margin-bottom:12px;">Step 2 — Connect to Claude</p>
+    <p style="color:#9ab;font-size:14px;margin-bottom:16px;line-height:1.6;">After installing the package, connect your Salesforce org to Claude.</p>
+    <a class="btn" href="${connectUrl}">Connect Salesforce →</a>
+  </div>
+  ${checkoutSession.customer ? `<p style="margin-top:16px;font-size:13px;color:#9ab;">Want to cancel? <a href="/portal?customer_id=${checkoutSession.customer}" style="color:#4A9EE0;">Manage subscription</a></p>` : ""}
 </div></body></html>`);
   } catch (err) {
     res.redirect('/');
