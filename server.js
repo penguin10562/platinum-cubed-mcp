@@ -580,6 +580,7 @@ app.get('/oauth/callback', async (req, res) => {
     const tokenParams = { grant_type:'authorization_code', code, client_id:PC_CLIENT_ID, client_secret:PC_CLIENT_SECRET, redirect_uri:CALLBACK_URL };
     if (codeVerifier) tokenParams.code_verifier = codeVerifier;
     const tokenRes = await request({ url:'https://login.salesforce.com/services/oauth2/token', method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'} }, new URLSearchParams(tokenParams).toString());
+    console.log('SF token response:', tokenRes.status, JSON.stringify(tokenRes.body));
     if (tokenRes.status!==200||!tokenRes.body.access_token) return res.status(400).send('Token exchange failed: '+JSON.stringify(tokenRes.body));
     const sessionId = crypto.randomBytes(24).toString('hex');
     sessions.set(sessionId, { accessToken:tokenRes.body.access_token, refreshToken:tokenRes.body.refresh_token, instanceUrl:tokenRes.body.instance_url||instanceUrl, tier });
