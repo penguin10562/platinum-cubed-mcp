@@ -46,6 +46,7 @@ const mcpAuthCodes    = new Map(); // code -> { clientId, tier, sessionId, expir
 const mcpTokens       = new Map(); // accessToken -> { clientId, tier, sessionId }
 
 // ── Middleware ────────────────────────────────────────────────────────────────
+app.use(express.static(__dirname + '/public'));
 app.use('/webhook', express.raw({ type: 'application/json' }));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
