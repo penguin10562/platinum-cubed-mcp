@@ -13,7 +13,6 @@ const crypto   = require('crypto');
 const Stripe   = require('stripe');
 
 const app  = express();
-app.use(express.static(__dirname + '/public'));
 const PORT = process.env.PORT || 3000;
 
 // ── Config ────────────────────────────────────────────────────────────────────
@@ -292,20 +291,14 @@ app.post('/checkout', async (req, res) => {
           const sub = subscriptions.data[0];
           const subTier = sub.metadata && sub.metadata.tier ? sub.metadata.tier : null;
 
-          // Detect tier from price amount if no metadata
-          let detectedTier = subTier;
-          if (!detectedTier && sub.items && sub.items.data && sub.items.data[0]) {
-            const unitAmount = sub.items.data[0].price && sub.items.data[0].price.unit_amount;
-            detectedTier = (unitAmount >= 4000) ? 'full' : 'readonly';
-          }
-          detectedTier = detectedTier || 'readonly';
-
-          // If they have readonly but are requesting full, block it
-          if (tier === 'full' && detectedTier === 'readonly') {
-            return res.json({ tier_mismatch: true, message: 'You have a Read Only subscription. Upgrade to Full Access?' });
+          // If they have readonly but are requesting full, deny it
+          if (tier === 'full' && subTier === 'readonly') {
+            return res.json({ tier_mismatch: true, subscribed_tier: 'readonly', message: 'Your current subscription is Read Only. Please upgrade to Full Access to use this tier.' });
           }
 
-          return res.json({ already_subscribed: true, tier: detectedTier, instance_url: instance_url || '' });
+          // Use their subscribed tier (don't let them self-upgrade)
+          const allowedTier = subTier || tier;
+          return res.json({ already_subscribed: true, tier: allowedTier, instance_url: instance_url || '' });
         }
       }
     } catch(err) {
@@ -404,17 +397,8 @@ app.get('/checkout/success', async (req, res) => {
 <div class="card">
   <h1>🎉 Payment Successful!</h1>
   <p>Thank you! Now let's connect your Salesforce org to Claude.</p>
-  <div style="background:#0d1f33;border-radius:12px;padding:24px;margin-bottom:20px;text-align:left;">
-    <p style="color:#4A9EE0;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:0.06em;margin-bottom:12px;">Step 1 — Install Package</p>
-    <p style="color:#9ab;font-size:14px;margin-bottom:16px;line-height:1.6;">Install the Platinum Cubed MCP package in your Salesforce org. This takes about 2 minutes.</p>
-    <a href="https://login.salesforce.com/packaging/installPackage.apexp?p0=04tUb000001DOYbIAO" target="_blank" style="display:inline-block;background:#2D7DD2;color:white;padding:11px 20px;border-radius:8px;text-decoration:none;font-size:14px;font-weight:600;">Install Package in Salesforce →</a>
-  </div>
-  <div style="background:#0d1f33;border-radius:12px;padding:24px;margin-bottom:20px;text-align:left;">
-    <p style="color:#4A9EE0;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:0.06em;margin-bottom:12px;">Step 2 — Connect to Claude</p>
-    <p style="color:#9ab;font-size:14px;margin-bottom:16px;line-height:1.6;">After installing the package, connect your Salesforce org to Claude.</p>
-    <a class="btn" href="${connectUrl}">Connect Salesforce →</a>
-  </div>
-  ${checkoutSession.customer ? `<p style="margin-top:16px;font-size:13px;color:#9ab;">Want to cancel? <a href="/portal?customer_id=${checkoutSession.customer}" style="color:#4A9EE0;">Manage subscription</a></p>` : ""}
+  <a class="btn" href="${connectUrl}">Connect Salesforce →</a>
+  ${checkoutSession.customer ? `<p style="margin-top:20px;font-size:13px;color:#9ab;">Want to cancel? <a href="/portal?customer_id=${checkoutSession.customer}" style="color:#4A9EE0;">Manage subscription</a></p>` : ""}
 </div></body></html>`);
   } catch (err) {
     res.redirect('/');
@@ -425,6 +409,119 @@ app.get('/checkout/success', async (req, res) => {
 app.post('/webhook', (req, res) => {
   // Handle subscription cancellations etc. in the future
   res.json({ received: true });
+});
+
+
+// ── MCP OAuth Discovery & DCR ─────────────────────────────────────────────────
+
+// Protected resource metadata - tells Claude where the auth server is
+app.get('/.well-known/oauth-protected-resource', (req, res) => {
+  res.json({
+    resource: SERVER_URL,
+    authorization_servers: [SERVER_URL],
+    bearer_methods_supported: ['header'],
+    resource_documentation: SERVER_URL
+  });
+});
+
+app.get('/.well-known/oauth-protected-resource/mcp/full', (req, res) => {
+  res.json({
+    resource: SERVER_URL + '/mcp/full',
+    authorization_servers: [SERVER_URL],
+    bearer_methods_supported: ['header']
+  });
+});
+
+app.get('/.well-known/oauth-protected-resource/mcp/readonly', (req, res) => {
+  res.json({
+    resource: SERVER_URL + '/mcp/readonly',
+    authorization_servers: [SERVER_URL],
+    bearer_methods_supported: ['header']
+  });
+});
+
+// Authorization server metadata
+app.get('/.well-known/oauth-authorization-server', (req, res) => {
+  res.json({
+    issuer: SERVER_URL,
+    authorization_endpoint: SERVER_URL + '/mcp/authorize',
+    token_endpoint: SERVER_URL + '/mcp/token',
+    registration_endpoint: SERVER_URL + '/register',
+    response_types_supported: ['code'],
+    grant_types_supported: ['authorization_code'],
+    code_challenge_methods_supported: ['S256'],
+    token_endpoint_auth_methods_supported: ['client_secret_post', 'none'],
+    scopes_supported: ['readonly', 'full']
+  });
+});
+
+// Dynamic client registration
+app.post('/register', (req, res) => {
+  const { redirect_uris, client_name, scope } = req.body;
+  const clientId     = crypto.randomBytes(16).toString('hex');
+  const clientSecret = crypto.randomBytes(32).toString('hex');
+  const tier = scope && scope.includes('full') ? 'full' : 'readonly';
+  mcpClients.set(clientId, { clientSecret, redirectUris: redirect_uris || [], tier });
+  // Clean up old clients
+  if (mcpClients.size > 500) mcpClients.delete([...mcpClients.keys()][0]);
+  res.status(201).json({
+    client_id: clientId,
+    client_secret: clientSecret,
+    redirect_uris: redirect_uris || [],
+    client_name: client_name || 'Claude MCP Client',
+    grant_types: ['authorization_code'],
+    response_types: ['code'],
+    token_endpoint_auth_method: 'client_secret_post'
+  });
+});
+
+// MCP Authorization endpoint - redirects to Salesforce OAuth
+app.get('/mcp/authorize', (req, res) => {
+  const { client_id, redirect_uri, state, code_challenge, code_challenge_method, scope } = req.query;
+  if (!client_id || !mcpClients.has(client_id)) {
+    return res.status(400).send('Invalid client_id');
+  }
+  const client = mcpClients.get(client_id);
+  const tier = scope && scope.includes('full') ? 'full' : (client.tier || 'readonly');
+  
+  // Store the pending auth request
+  const authState = crypto.randomBytes(16).toString('hex');
+  pkceStore.set('mcp_' + authState, { clientId: client_id, redirectUri: redirect_uri, state, codeChallenge: code_challenge, tier });
+  
+  // Redirect to Salesforce OAuth
+  const sfState    = authState + '|mcp|' + encodeURIComponent(tier);
+  const sfVerifier = generateCodeVerifier();
+  const sfChallenge = generateCodeChallenge(sfVerifier);
+  pkceStore.set('sf_' + authState, sfVerifier);
+  
+  const authUrl = 'https://login.salesforce.com/services/oauth2/authorize?' + new URLSearchParams({
+    response_type: 'code',
+    client_id: PC_CLIENT_ID,
+    redirect_uri: CALLBACK_URL,
+    scope: tier === 'full' ? 'full refresh_token' : 'api refresh_token',
+    state: sfState,
+    code_challenge: sfChallenge,
+    code_challenge_method: 'S256'
+  });
+  res.redirect(authUrl);
+});
+
+// MCP Token endpoint
+app.post('/mcp/token', (req, res) => {
+  const { client_id, client_secret, code, grant_type, code_verifier } = req.body;
+  if (grant_type !== 'authorization_code') return res.status(400).json({ error: 'unsupported_grant_type' });
+  if (!client_id || !mcpClients.has(client_id)) return res.status(401).json({ error: 'invalid_client' });
+  const client = mcpClients.get(client_id);
+  if (client.clientSecret !== client_secret) return res.status(401).json({ error: 'invalid_client' });
+  const authCode = mcpAuthCodes.get(code);
+  if (!authCode || authCode.clientId !== client_id || Date.now() > authCode.expiresAt) {
+    return res.status(400).json({ error: 'invalid_grant' });
+  }
+  mcpAuthCodes.delete(code);
+  const accessToken = crypto.randomBytes(32).toString('hex');
+  mcpTokens.set(accessToken, { clientId: client_id, tier: authCode.tier, sessionId: authCode.sessionId });
+  if (mcpTokens.size > 500) mcpTokens.delete([...mcpTokens.keys()][0]);
+  res.json({ access_token: accessToken, token_type: 'Bearer', scope: authCode.tier });
 });
 
 // ── OAuth routes ──────────────────────────────────────────────────────────────
@@ -448,62 +545,44 @@ app.get('/oauth/start', (req, res) => {
 
 app.get('/oauth/callback', async (req, res) => {
   const { code, state, error, error_description } = req.query;
-  if (error) {
-    if (error === 'OAUTH_EC_APP_NOT_FOUND') {
-      return res.send(`<!DOCTYPE html><html><head><title>Package Not Installed — Platinum Cubed MCP</title>
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<style>
-  *{box-sizing:border-box;margin:0;padding:0;}
-  body{font-family:-apple-system,sans-serif;background:#0B1829;color:#e0e8f0;min-height:100vh;display:flex;flex-direction:column;}
-  nav{background:#0d1f33;border-bottom:1px solid #1e3a5f;padding:0 40px;height:60px;display:flex;align-items:center;}
-  .logo{font-size:16px;font-weight:600;color:white;}.logo span{color:#4A9EE0;}
-  .center{flex:1;display:flex;align-items:center;justify-content:center;padding:40px 20px;}
-  .card{background:#132035;border:1px solid #1e3a5f;border-radius:16px;padding:40px;max-width:520px;width:100%;text-align:center;}
-  .icon{width:52px;height:52px;background:#FEF9EC;border-radius:50%;display:flex;align-items:center;justify-content:center;margin:0 auto 16px;font-size:24px;}
-  h1{font-size:22px;font-weight:600;margin-bottom:8px;color:#F0C060;}
-  .sub{color:#8aabcc;font-size:14px;margin-bottom:28px;line-height:1.6;}
-  .step{background:#0B1829;border-radius:12px;padding:24px;margin-bottom:16px;text-align:left;}
-  .step-label{color:#4A9EE0;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:0.06em;margin-bottom:8px;}
-  .step p{color:#9ab;font-size:14px;line-height:1.6;margin-bottom:14px;}
-  .btn-blue{display:inline-block;background:#2D7DD2;color:white;padding:12px 22px;border-radius:8px;text-decoration:none;font-size:14px;font-weight:600;}
-  .btn-back{display:inline-block;background:transparent;color:#4A9EE0;padding:12px 22px;border-radius:8px;text-decoration:none;font-size:14px;border:1px solid #2a4a6e;}
-</style></head><body>
-<nav><div class="logo">Platinum <span>Cubed</span> MCP</div></nav>
-<div class="center"><div class="card">
-  <div class="icon">📦</div>
-  <h1>Package Not Installed</h1>
-  <p class="sub">The Platinum Cubed MCP package needs to be installed in your Salesforce org before you can connect. This only takes about 2 minutes!</p>
-  <div class="step">
-    <div class="step-label">Step 1 — Install the Package</div>
-    <p>Click below to install the package in your Salesforce org. Make sure to log into the correct org.</p>
-    <a class="btn-blue" href="https://login.salesforce.com/packaging/installPackage.apexp?p0=04tUb000001DOYbIAO" target="_blank">Install Package in Salesforce →</a>
-  </div>
-  <div class="step">
-    <div class="step-label">Step 2 — Come Back and Connect</div>
-    <p>After the package is installed, click below to try connecting again.</p>
-    <a class="btn-back" href="/">Try Again →</a>
-  </div>
-</div></div>
-</body></html>`);
-    }
-    return res.status(400).send(`OAuth error: ${error} — ${error_description}`);
-  }
+  if (error) return res.status(400).send(`OAuth error: ${error} — ${error_description}`);
   if (!code || !state) return res.status(400).send('Missing code or state');
   const parts = state.split('|');
   const stateToken  = parts[0];
-  const tier        = parts[1] || 'readonly';
-  const instanceUrl = decodeURIComponent(parts[2] || 'https://login.salesforce.com');
-  const email       = decodeURIComponent(parts[3] || '');
-  const codeVerifier = pkceStore.get(stateToken);
-  pkceStore.delete(stateToken);
+  const flowType    = parts[1] || 'readonly'; // 'mcp' or tier
+  const isMcpFlow   = flowType === 'mcp';
+  const tier        = isMcpFlow ? decodeURIComponent(parts[2] || 'readonly') : (flowType || 'readonly');
+  const instanceUrl = isMcpFlow ? 'https://login.salesforce.com' : decodeURIComponent(parts[2] || 'https://login.salesforce.com');
+  const email       = isMcpFlow ? '' : decodeURIComponent(parts[3] || '');
+  
+  // Get PKCE verifier
+  const sfVerifierKey = isMcpFlow ? 'sf_' + stateToken : stateToken;
+  const codeVerifier  = pkceStore.get(sfVerifierKey);
+  pkceStore.delete(sfVerifierKey);
+  
+  // Get pending MCP auth request if this is MCP flow
+  const mcpAuthKey    = 'mcp_' + stateToken;
+  const pendingMcpAuth = pkceStore.get(mcpAuthKey);
+  if (isMcpFlow) pkceStore.delete(mcpAuthKey);
+
   try {
     const tokenParams = { grant_type:'authorization_code', code, client_id:PC_CLIENT_ID, client_secret:PC_CLIENT_SECRET, redirect_uri:CALLBACK_URL };
     if (codeVerifier) tokenParams.code_verifier = codeVerifier;
-    const tokenRes = await request({ url:`${instanceUrl}/services/oauth2/token`, method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'} }, new URLSearchParams(tokenParams).toString());
+    const tokenRes = await request({ url:'https://login.salesforce.com/services/oauth2/token', method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'} }, new URLSearchParams(tokenParams).toString());
     if (tokenRes.status!==200||!tokenRes.body.access_token) return res.status(400).send('Token exchange failed: '+JSON.stringify(tokenRes.body));
     const sessionId = crypto.randomBytes(24).toString('hex');
     sessions.set(sessionId, { accessToken:tokenRes.body.access_token, refreshToken:tokenRes.body.refresh_token, instanceUrl:tokenRes.body.instance_url||instanceUrl, tier });
     if (sessions.size>100) sessions.delete([...sessions.keys()][0]);
+
+    // If MCP flow, generate auth code and redirect back to Claude
+    if (isMcpFlow && pendingMcpAuth) {
+      const authCode = crypto.randomBytes(24).toString('hex');
+      mcpAuthCodes.set(authCode, { clientId: pendingMcpAuth.clientId, tier, sessionId, expiresAt: Date.now() + 600000 });
+      if (mcpAuthCodes.size > 500) mcpAuthCodes.delete([...mcpAuthCodes.keys()][0]);
+      const redirectUrl = pendingMcpAuth.redirectUri + '?' + new URLSearchParams({ code: authCode, state: pendingMcpAuth.state });
+      return res.redirect(redirectUrl);
+    }
+
     const mcpUrl = `${SERVER_URL}/mcp/${tier}?session=${sessionId}`;
     res.send(`<!DOCTYPE html><html><head><title>Connected! — Platinum Cubed MCP</title>
 <style>
@@ -539,9 +618,22 @@ app.get('/oauth/callback', async (req, res) => {
 // ── MCP endpoints ─────────────────────────────────────────────────────────────
 function mcpHandler(tier) {
   return async (req, res) => {
-    const sessionId = req.query.session;
-    const session   = sessions.get(sessionId);
-    if (!session) return res.status(401).json({ error: 'Invalid or expired session. Please reconnect at '+SERVER_URL });
+    // Support both Bearer token (OAuth DCR flow) and session query param (direct flow)
+    let session = null;
+    const authHeader = req.headers['authorization'];
+    if (authHeader && authHeader.startsWith('Bearer ')) {
+      const bearerToken = authHeader.slice(7);
+      const tokenData = mcpTokens.get(bearerToken);
+      if (tokenData) session = sessions.get(tokenData.sessionId);
+    }
+    if (!session) {
+      const sessionId = req.query.session;
+      session = sessions.get(sessionId);
+    }
+    if (!session) {
+      res.setHeader('WWW-Authenticate', `Bearer realm="${SERVER_URL}", resource_metadata="${SERVER_URL}/.well-known/oauth-protected-resource"`);
+      return res.status(401).json({ error: 'Invalid or expired session. Please reconnect at '+SERVER_URL });
+    }
     if (req.method==='GET') {
       res.setHeader('Content-Type','text/event-stream');
       res.setHeader('Cache-Control','no-cache');
@@ -586,7 +678,7 @@ app.get('/', (req, res) => {
   res.send(`<!DOCTYPE html><html><head>
 <title>Platinum Cubed MCP — Salesforce for Claude</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
-
+<script src="https://js.stripe.com/v3/"></script>
 <style>
   *{box-sizing:border-box;margin:0;padding:0;}
   body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#0B1829;color:#e0e8f0;min-height:100vh;}
@@ -623,7 +715,7 @@ app.get('/', (req, res) => {
 </style></head><body>
 <nav>
   <div class="logo">Platinum <span>Cubed</span> MCP</div>
-  <a href="/manage" style="font-size:13px;color:#4A9EE0;text-decoration:none;">Manage subscription</a>
+  <div style="font-size:13px;color:#556;">Salesforce × Claude</div>
 </nav>
 <div class="hero">
   <h1>Connect <span>Salesforce</span> to Claude</h1>
@@ -678,9 +770,71 @@ app.get('/', (req, res) => {
 
 </div>
 <footer>Built by <a href="https://platinumcubed.com" target="_blank">Platinum Cubed</a> · Salesforce consulting & AI innovation</footer>
-<script src="/app.js"></script>
+<script>
+const pricing = {
+  ro:   { monthly: { price: '$20', sub: 'per month', billing: 'monthly' }, annual: { price: '$220', sub: 'per year ($18.33/mo)', billing: 'annual' } },
+  full: { monthly: { price: '$40', sub: 'per month', billing: 'monthly' }, annual: { price: '$440', sub: 'per year ($36.67/mo)', billing: 'annual' } }
+};
+const selected = { ro: 'monthly', full: 'monthly' };
+
+function setPrice(tier, billing, btn) {
+  selected[tier] = billing;
+  const p = pricing[tier][billing];
+  document.getElementById(tier+'-price').textContent = p.price;
+  document.getElementById(tier+'-sub').textContent = p.sub;
+  btn.closest('.price-toggle').querySelectorAll('.ptab').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+}
+
+async function doCheckout(tier) {
+  const urlId   = tier === 'full' ? 'full-url'   : 'ro-url';
+  const emailId = tier === 'full' ? 'full-email' : 'ro-email';
+  const btnId   = 'btn-' + tier;
+
+  const urlEl   = document.getElementById(urlId);
+  const emailEl = document.getElementById(emailId);
+  const btn     = document.getElementById(btnId);
+
+  if (!urlEl || !emailEl) { alert('Form fields not found. Please refresh the page.'); return; }
+
+  const instanceUrl = urlEl.value.trim() || 'https://login.salesforce.com';
+  const email = emailEl.value.trim();
+
+  if (!email) { alert('Please enter your email address.'); return; }
+
+  const billing = selected[tier === 'full' ? 'full' : 'ro'];
+  btn.textContent = 'Checking...';
+  btn.disabled = true;
+
+  try {
+    const res = await fetch('/checkout', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tier, billing, instance_url: instanceUrl, email })
+    });
+    const data = await res.json();
+    if (data.tier_mismatch) {
+      alert(data.message + '\n\nClick OK to manage your subscription.');
+      window.location.href = '/manage';
+    } else if (data.already_subscribed) {
+      window.location.href = '/oauth/start?tier=' + data.tier + '&instance_url=' + encodeURIComponent(data.instance_url || 'https://login.salesforce.com') + '&email=' + encodeURIComponent(email);
+    } else if (data.url) {
+      window.location.href = data.url;
+    } else {
+      alert('Error: ' + (data.error || 'Unknown error'));
+      btn.textContent = 'Get started →';
+      btn.disabled = false;
+    }
+  } catch(err) {
+    alert('Error: ' + err.message);
+    btn.textContent = 'Get started →';
+    btn.disabled = false;
+  }
+}</script>
 </body></html>`);
 });
+
+// ── Manage subscription page ─────────────────────────────────────────────────
 app.get('/manage', (req, res) => {
   const error = req.query.error || '';
   res.send(`<!DOCTYPE html><html><head><title>Manage Subscription — Platinum Cubed MCP</title>
@@ -760,98 +914,6 @@ app.get('/portal', async (req, res) => {
   }
 });
 
-// ── Upgrade subscription ──────────────────────────────────────────────────────
-app.get('/checkout/upgrade', async (req, res) => {
-  const { email, instance_url, billing } = req.query;
-  if (!stripe || !email) return res.redirect('/');
-  try {
-    const customers = await stripe.customers.list({ email: email.trim().toLowerCase(), limit: 1 });
-    const customerId = customers.data && customers.data[0] ? customers.data[0].id : undefined;
-    const amount = billing === 'annual' ? 44000 : 4000;
-    const session = await stripe.checkout.sessions.create({
-      payment_method_types: ['card'],
-      mode: billing === 'annual' ? 'payment' : 'subscription',
-      customer: customerId,
-      line_items: [{
-        price_data: {
-          currency: 'usd',
-          product_data: { name: 'Platinum Cubed MCP — Full Access Upgrade' },
-          unit_amount: amount,
-          ...(billing === 'monthly' ? { recurring: { interval: 'month' } } : {})
-        },
-        quantity: 1
-      }],
-      success_url: SERVER_URL + '/checkout/success?session_id={CHECKOUT_SESSION_ID}',
-      cancel_url: SERVER_URL + '/',
-      metadata: { tier: 'full', billing, instance_url: instance_url || '' },
-      subscription_data: { metadata: { tier: 'full', billing } }
-    });
-    res.redirect(session.url);
-  } catch(err) {
-    res.redirect('/?error=' + encodeURIComponent(err.message));
-  }
-});
-
 app.get('/health', (req, res) => res.json({ status: 'ok', sessions: sessions.size, paidUsers: paidUsers.size }));
 
 app.listen(PORT, () => console.log(`Platinum Cubed MCP running on port ${PORT}`));
-
-// ── Frontend JS ───────────────────────────────────────────────────────────────
-app.get('/app.js', (req, res) => {
-  res.setHeader('Content-Type', 'application/javascript');
-  res.send(`
-const pricing = {
-  ro:   { monthly: { price: '$20', sub: 'per month', billing: 'monthly' }, annual: { price: '$220', sub: 'per year ($18.33/mo)', billing: 'annual' } },
-  full: { monthly: { price: '$40', sub: 'per month', billing: 'monthly' }, annual: { price: '$440', sub: 'per year ($36.67/mo)', billing: 'annual' } }
-};
-const selected = { ro: 'monthly', full: 'monthly' };
-
-function setPrice(tier, billing, btn) {
-  selected[tier] = billing;
-  const p = pricing[tier][billing];
-  document.getElementById(tier+'-price').textContent = p.price;
-  document.getElementById(tier+'-sub').textContent = p.sub;
-  btn.closest('.price-toggle').querySelectorAll('.ptab').forEach(b => b.classList.remove('active'));
-  btn.classList.add('active');
-}
-
-async function doCheckout(tier) {
-  const urlId   = tier === 'full' ? 'full-url'   : 'ro-url';
-  const emailId = tier === 'full' ? 'full-email' : 'ro-email';
-  const btnId   = 'btn-' + tier;
-  const urlEl   = document.getElementById(urlId);
-  const emailEl = document.getElementById(emailId);
-  const btn     = document.getElementById(btnId);
-  if (!urlEl || !emailEl) { alert('Form fields not found. Please refresh the page.'); return; }
-  const instanceUrl = urlEl.value.trim() || 'https://login.salesforce.com';
-  const email = emailEl.value.trim();
-  if (!email) { alert('Please enter your email address.'); return; }
-  const billing = selected[tier === 'full' ? 'full' : 'ro'];
-  btn.textContent = 'Checking...';
-  btn.disabled = true;
-  try {
-    const res = await fetch('/checkout', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ tier, billing, instance_url: instanceUrl, email })
-    });
-    const data = await res.json();
-    if (data.tier_mismatch) {
-
-    } else if (data.already_subscribed) {
-      window.location.href = '/install?tier=' + data.tier + '&instance_url=' + encodeURIComponent(data.instance_url || 'https://login.salesforce.com') + '&email=' + encodeURIComponent(email);
-    } else if (data.url) {
-      window.location.href = data.url;
-    } else {
-      alert('Error: ' + (data.error || 'Unknown error'));
-      btn.textContent = 'Get started →';
-      btn.disabled = false;
-    }
-  } catch(err) {
-    alert('Error: ' + err.message);
-    btn.textContent = 'Get started →';
-    btn.disabled = false;
-  }
-}
-  `);
-});
