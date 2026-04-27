@@ -456,23 +456,30 @@ app.get('/.well-known/oauth-authorization-server', (req, res) => {
 });
 
 // Dynamic client registration
-app.post('/register', (req, res) => {
-  const { redirect_uris, client_name, scope } = req.body;
-  const clientId     = crypto.randomBytes(16).toString('hex');
-  const clientSecret = crypto.randomBytes(32).toString('hex');
-  const tier = scope && scope.includes('full') ? 'full' : 'readonly';
-  mcpClients.set(clientId, { clientSecret, redirectUris: redirect_uris || [], tier });
-  // Clean up old clients
-  if (mcpClients.size > 500) mcpClients.delete([...mcpClients.keys()][0]);
-  res.status(201).json({
-    client_id: clientId,
-    client_secret: clientSecret,
-    redirect_uris: redirect_uris || [],
-    client_name: client_name || 'Claude MCP Client',
-    grant_types: ['authorization_code'],
-    response_types: ['code'],
-    token_endpoint_auth_method: 'client_secret_post'
-  });
+app.post('/register', express.json(), express.urlencoded({ extended: true }), (req, res) => {
+  try {
+    const body = req.body || {};
+    const redirect_uris = body.redirect_uris || [];
+    const client_name   = body.client_name || 'Claude MCP Client';
+    const scope         = body.scope || '';
+    const clientId      = crypto.randomBytes(16).toString('hex');
+    const clientSecret  = crypto.randomBytes(32).toString('hex');
+    const tier = scope.includes('full') ? 'full' : 'readonly';
+    mcpClients.set(clientId, { clientSecret, redirectUris: redirect_uris, tier });
+    if (mcpClients.size > 500) mcpClients.delete([...mcpClients.keys()][0]);
+    res.status(201).json({
+      client_id: clientId,
+      client_secret: clientSecret,
+      redirect_uris,
+      client_name,
+      grant_types: ['authorization_code'],
+      response_types: ['code'],
+      token_endpoint_auth_method: 'client_secret_post'
+    });
+  } catch(err) {
+    console.error('Register error:', err.message, req.body);
+    res.status(500).json({ error: 'server_error', error_description: err.message });
+  }
 });
 
 // MCP Authorization endpoint - redirects to Salesforce OAuth
