@@ -579,7 +579,11 @@ app.get('/oauth/callback', async (req, res) => {
   try {
     const tokenParams = { grant_type:'authorization_code', code, client_id:PC_CLIENT_ID, client_secret:PC_CLIENT_SECRET, redirect_uri:CALLBACK_URL };
     if (codeVerifier) tokenParams.code_verifier = codeVerifier;
-    const tokenRes = await request({ url:'https://login.salesforce.com/services/oauth2/token', method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'} }, new URLSearchParams(tokenParams).toString());
+    // Try the org's specific instance URL for token exchange
+    const sfInstanceUrl = req.query.instance_url ? decodeURIComponent(req.query.instance_url) : 'https://login.salesforce.com';
+    const tokenEndpoint = (isMcpFlow ? 'https://login.salesforce.com' : sfInstanceUrl) + '/services/oauth2/token';
+    console.log('Token endpoint:', tokenEndpoint, 'params:', JSON.stringify(tokenParams));
+    const tokenRes = await request({ url:tokenEndpoint, method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'} }, new URLSearchParams(tokenParams).toString());
     console.log('SF token response:', tokenRes.status, JSON.stringify(tokenRes.body));
     if (tokenRes.status!==200||!tokenRes.body.access_token) return res.status(400).send('Token exchange failed: '+JSON.stringify(tokenRes.body));
     const sessionId = crypto.randomBytes(24).toString('hex');
@@ -690,7 +694,7 @@ app.get('/', (req, res) => {
   res.send(`<!DOCTYPE html><html><head>
 <title>Platinum Cubed MCP — Salesforce for Claude</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<script src="https://js.stripe.com/v3/"></script>
+<script src="/app.js"></script>
 <style>
   *{box-sizing:border-box;margin:0;padding:0;}
   body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#0B1829;color:#e0e8f0;min-height:100vh;}
