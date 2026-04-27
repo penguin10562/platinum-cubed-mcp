@@ -573,6 +573,7 @@ app.get('/oauth/callback', async (req, res) => {
   // Get pending MCP auth request if this is MCP flow
   const mcpAuthKey    = 'mcp_' + stateToken;
   const pendingMcpAuth = pkceStore.get(mcpAuthKey);
+  console.log('OAuth callback - isMcpFlow:', isMcpFlow, 'stateToken:', stateToken, 'hasPendingAuth:', !!pendingMcpAuth, 'pkceStoreKeys:', [...pkceStore.keys()]);
   if (isMcpFlow) pkceStore.delete(mcpAuthKey);
 
   try {
