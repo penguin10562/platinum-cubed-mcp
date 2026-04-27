@@ -41,6 +41,9 @@ const sessions   = new Map(); // sessionId -> { accessToken, instanceUrl, tier }
 const pkceStore  = new Map(); // stateToken -> codeVerifier
 const paidUsers  = new Map(); // email -> { tier, stripeCustomerId, validUntil }
 const pendingCheckouts = new Map(); // checkoutSessionId -> { tier, instanceUrl }
+const mcpClients      = new Map(); // clientId -> { clientSecret, redirectUris, tier }
+const mcpAuthCodes    = new Map(); // code -> { clientId, tier, sessionId, expiresAt }
+const mcpTokens       = new Map(); // accessToken -> { clientId, tier, sessionId }
 
 // ── Middleware ────────────────────────────────────────────────────────────────
 app.use('/webhook', express.raw({ type: 'application/json' }));
