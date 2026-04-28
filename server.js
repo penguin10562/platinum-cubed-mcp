@@ -428,6 +428,17 @@ app.get('/.well-known/oauth-protected-resource', (req, res) => {
   });
 });
 
+// Per-endpoint protected resource metadata (includes instance URL hint)
+app.get('/.well-known/oauth-protected-resource/mcp/:tier', (req, res) => {
+  const instance_url = req.query.instance_url || '';
+  res.json({
+    resource: SERVER_URL + '/mcp/' + req.params.tier,
+    authorization_servers: [SERVER_URL],
+    bearer_methods_supported: ['header'],
+    authorization_details: instance_url ? [{ type: 'salesforce_instance', instance_url }] : undefined
+  });
+});
+
 app.get('/.well-known/oauth-protected-resource/mcp/full', (req, res) => {
   res.json({
     resource: SERVER_URL + '/mcp/full',
@@ -488,16 +499,18 @@ app.post('/register', express.json(), express.urlencoded({ extended: true }), (r
 
 // MCP Authorization endpoint - redirects to Salesforce OAuth
 app.get('/mcp/authorize', (req, res) => {
-  const { client_id, redirect_uri, state, code_challenge, code_challenge_method, scope } = req.query;
+  const { client_id, redirect_uri, state, code_challenge, code_challenge_method, scope, instance_url } = req.query;
   if (!client_id || !mcpClients.has(client_id)) {
     return res.status(400).send('Invalid client_id');
   }
   const client = mcpClients.get(client_id);
   const tier = scope && scope.includes('full') ? 'full' : (client.tier || 'readonly');
+  const sfInstanceUrl = instance_url ? decodeURIComponent(instance_url) : (client.instanceUrl || 'https://login.salesforce.com');
+  console.log('MCP authorize - instance URL:', sfInstanceUrl);
   
   // Store the pending auth request
   const authState = crypto.randomBytes(16).toString('hex');
-  pkceStore.set('mcp_' + authState, { clientId: client_id, redirectUri: redirect_uri, state, codeChallenge: code_challenge, tier });
+  pkceStore.set('mcp_' + authState, { clientId: client_id, redirectUri: redirect_uri, state, codeChallenge: code_challenge, tier, instanceUrl: sfInstanceUrl });
   
   // Redirect to Salesforce OAuth
   const sfState    = authState + '|mcp|' + encodeURIComponent(tier);
@@ -505,7 +518,7 @@ app.get('/mcp/authorize', (req, res) => {
   const sfChallenge = generateCodeChallenge(sfVerifier);
   pkceStore.set('sf_' + authState, sfVerifier);
   
-  const authUrl = 'https://login.salesforce.com/services/oauth2/authorize?' + new URLSearchParams({
+  const authUrl = sfInstanceUrl + '/services/oauth2/authorize?' + new URLSearchParams({
     response_type: 'code',
     client_id: PC_CLIENT_ID,
     redirect_uri: CALLBACK_URL,
@@ -600,7 +613,8 @@ app.get('/oauth/callback', async (req, res) => {
       return res.redirect(redirectUrl);
     }
 
-    const mcpUrl = `${SERVER_URL}/mcp/${tier}?session=${sessionId}`;
+    const mcpInstanceUrl = tokenRes.body.instance_url || instanceUrl;
+    const mcpUrl = `${SERVER_URL}/mcp/${tier}?session=${sessionId}&instance=${encodeURIComponent(mcpInstanceUrl)}`;
     res.send(`<!DOCTYPE html><html><head><title>Connected! — Platinum Cubed MCP</title>
 <style>
   body{font-family:-apple-system,sans-serif;background:#0B1829;color:white;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;}
@@ -648,7 +662,9 @@ function mcpHandler(tier) {
       session = sessions.get(sessionId);
     }
     if (!session) {
-      res.setHeader('WWW-Authenticate', `Bearer realm="${SERVER_URL}", resource_metadata="${SERVER_URL}/.well-known/oauth-protected-resource"`);
+      const instanceHint = req.query.instance || '';
+      const resourceUrl = SERVER_URL + req.path + (instanceHint ? '?instance=' + encodeURIComponent(instanceHint) : '');
+      res.setHeader('WWW-Authenticate', `Bearer realm="${SERVER_URL}", resource_metadata="${SERVER_URL}/.well-known/oauth-protected-resource${req.path}${instanceHint ? '?instance_url=' + encodeURIComponent(instanceHint) : ''}"`);
       return res.status(401).json({ error: 'Invalid or expired session. Please reconnect at '+SERVER_URL });
     }
     if (req.method==='GET') {
