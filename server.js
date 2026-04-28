@@ -11,6 +11,7 @@ const urlLib   = require('url');
 const zlib     = require('zlib');
 const crypto   = require('crypto');
 const Stripe   = require('stripe');
+const { Pool }  = require('pg');
 
 const app  = express();
 const PORT = process.env.PORT || 3000;
@@ -26,6 +27,80 @@ const API_VERSION        = 'v62.0';
 const API_VER_NUM        = '62.0';
 
 const stripe = STRIPE_SECRET_KEY ? Stripe(STRIPE_SECRET_KEY) : null;
+
+// ── Database ──────────────────────────────────────────────────────────────────
+const pool = process.env.DATABASE_URL ? new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: { rejectUnauthorized: false }
+}) : null;
+
+async function initDb() {
+  if (!pool) return;
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS org_keys (
+        instance_url TEXT PRIMARY KEY,
+        org_id TEXT,
+        consumer_key TEXT NOT NULL,
+        consumer_secret TEXT NOT NULL,
+        created_at TIMESTAMP DEFAULT NOW(),
+        updated_at TIMESTAMP DEFAULT NOW()
+      )
+    `);
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS subscriptions (
+        email TEXT PRIMARY KEY,
+        stripe_customer_id TEXT,
+        tier TEXT,
+        created_at TIMESTAMP DEFAULT NOW()
+      )
+    `);
+    console.log('Database initialized');
+  } catch(err) {
+    console.error('DB init error:', err.message);
+  }
+}
+initDb();
+
+async function getOrgKeys(instanceUrl) {
+  if (!pool) return null;
+  try {
+    const res = await pool.query('SELECT * FROM org_keys WHERE instance_url = $1', [instanceUrl.toLowerCase()]);
+    return res.rows[0] || null;
+  } catch(err) { return null; }
+}
+
+async function saveOrgKeys(instanceUrl, orgId, consumerKey, consumerSecret) {
+  if (!pool) return;
+  try {
+    await pool.query(`
+      INSERT INTO org_keys (instance_url, org_id, consumer_key, consumer_secret, updated_at)
+      VALUES ($1, $2, $3, $4, NOW())
+      ON CONFLICT (instance_url) DO UPDATE SET
+        org_id = $2, consumer_key = $3, consumer_secret = $4, updated_at = NOW()
+    `, [instanceUrl.toLowerCase(), orgId, consumerKey, consumerSecret]);
+  } catch(err) { console.error('saveOrgKeys error:', err.message); }
+}
+
+async function saveSubscription(email, stripeCustomerId, tier) {
+  if (!pool) return;
+  try {
+    await pool.query(`
+      INSERT INTO subscriptions (email, stripe_customer_id, tier)
+      VALUES ($1, $2, $3)
+      ON CONFLICT (email) DO UPDATE SET
+        stripe_customer_id = $2, tier = $3
+    `, [email.toLowerCase(), stripeCustomerId, tier]);
+  } catch(err) { console.error('saveSubscription error:', err.message); }
+}
+
+async function getSubscription(email) {
+  if (!pool) return null;
+  try {
+    const res = await pool.query('SELECT * FROM subscriptions WHERE email = $1', [email.toLowerCase()]);
+    return res.rows[0] || null;
+  } catch(err) { return null; }
+}
 
 // ── Pricing ───────────────────────────────────────────────────────────────────
 // After creating products in Stripe dashboard, add price IDs as env vars
@@ -388,7 +463,7 @@ app.get('/checkout/success', async (req, res) => {
     }
 
     // Redirect to OAuth connect
-    const connectUrl = `/oauth/start?tier=${tier}&instance_url=${encodeURIComponent(instanceUrl)}&email=${encodeURIComponent(email||'')}`;
+    const connectUrl = `/setup?tier=${tier}&instance_url=${encodeURIComponent(instanceUrl)}&email=${encodeURIComponent(email||'')}`;
     res.send(`<!DOCTYPE html><html><head><title>Payment Successful!</title>
 <style>
   body{font-family:-apple-system,sans-serif;background:#0B1829;color:white;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;}
@@ -548,6 +623,33 @@ app.post('/mcp/token', (req, res) => {
   res.json({ access_token: accessToken, token_type: 'Bearer', scope: authCode.tier });
 });
 
+
+// ── Org Setup Flow (Auto-discover Consumer Key) ───────────────────────────────
+
+// Step 1: Admin initiates setup for their org
+app.get('/setup', (req, res) => {
+  const { instance_url, tier, email } = req.query;
+  const sfInstanceUrl = instance_url || 'https://login.salesforce.com';
+  const stateToken  = crypto.randomBytes(16).toString('hex');
+  const state       = stateToken + '|setup|' + encodeURIComponent(sfInstanceUrl) + '|' + encodeURIComponent(tier||'readonly') + '|' + encodeURIComponent(email||'');
+  const codeVerifier  = generateCodeVerifier();
+  const codeChallenge = generateCodeChallenge(codeVerifier);
+  pkceStore.set(stateToken, codeVerifier);
+  if (pkceStore.size > 200) pkceStore.delete([...pkceStore.keys()][0]);
+
+  // Use production org's Consumer Key for setup auth
+  const authUrl = sfInstanceUrl + '/services/oauth2/authorize?' + new URLSearchParams({
+    response_type: 'code',
+    client_id: PC_CLIENT_ID,
+    redirect_uri: CALLBACK_URL,
+    scope: 'full refresh_token',
+    state,
+    code_challenge: codeChallenge,
+    code_challenge_method: 'S256'
+  });
+  res.redirect(authUrl);
+});
+
 // ── OAuth routes ──────────────────────────────────────────────────────────────
 app.get('/oauth/start', (req, res) => {
   const tier        = req.query.tier        || 'readonly';
@@ -573,11 +675,12 @@ app.get('/oauth/callback', async (req, res) => {
   if (!code || !state) return res.status(400).send('Missing code or state');
   const parts = state.split('|');
   const stateToken  = parts[0];
-  const flowType    = parts[1] || 'readonly'; // 'mcp' or tier
+  const flowType    = parts[1] || 'readonly'; // 'mcp', 'setup', or tier
   const isMcpFlow   = flowType === 'mcp';
-  const tier        = isMcpFlow ? decodeURIComponent(parts[2] || 'readonly') : (flowType || 'readonly');
-  const instanceUrl = isMcpFlow ? 'https://login.salesforce.com' : decodeURIComponent(parts[2] || 'https://login.salesforce.com');
-  const email       = isMcpFlow ? '' : decodeURIComponent(parts[3] || '');
+  const isSetupFlow = flowType === 'setup';
+  const tier        = isMcpFlow ? decodeURIComponent(parts[2] || 'readonly') : (isSetupFlow ? decodeURIComponent(parts[3] || 'readonly') : (flowType || 'readonly'));
+  const instanceUrl = (isMcpFlow || isSetupFlow) ? decodeURIComponent(parts[2] || 'https://login.salesforce.com') : decodeURIComponent(parts[2] || 'https://login.salesforce.com');
+  const email       = isSetupFlow ? decodeURIComponent(parts[4] || '') : (isMcpFlow ? '' : decodeURIComponent(parts[3] || ''));
   
   // Get PKCE verifier
   const sfVerifierKey = isMcpFlow ? 'sf_' + stateToken : stateToken;
@@ -603,6 +706,71 @@ app.get('/oauth/callback', async (req, res) => {
     const sessionId = crypto.randomBytes(24).toString('hex');
     sessions.set(sessionId, { accessToken:tokenRes.body.access_token, refreshToken:tokenRes.body.refresh_token, instanceUrl:tokenRes.body.instance_url||instanceUrl, tier });
     if (sessions.size>100) sessions.delete([...sessions.keys()][0]);
+
+    // If Setup flow, discover and store the org's Consumer Key
+    if (isSetupFlow) {
+      try {
+        const sfOrgInstanceUrl = tokenRes.body.instance_url || instanceUrl;
+        // Query the org's Consumer Key from ExtlClntAppGlobalOauthSettings
+        const ecaRes = await request({
+          url: sfOrgInstanceUrl + '/services/data/v62.0/query?q=' + encodeURIComponent("SELECT Id, DeveloperName FROM ExternalClientApplication WHERE DeveloperName = 'Platinum_Cubed_MCP_Dist' LIMIT 1"),
+          method: 'GET',
+          headers: { Authorization: 'Bearer ' + tokenRes.body.access_token }
+        });
+        
+        if (ecaRes.body && ecaRes.body.records && ecaRes.body.records[0]) {
+          const ecaId = ecaRes.body.records[0].Id;
+          // Get the org ID from identity
+          const identityRes = await request({
+            url: tokenRes.body.id || (sfOrgInstanceUrl + '/services/oauth2/userinfo'),
+            method: 'GET',
+            headers: { Authorization: 'Bearer ' + tokenRes.body.access_token }
+          });
+          const orgId = identityRes.body && identityRes.body.organization_id;
+          
+          // Store the session so user can start using MCP right away
+          // Note: we use prod Consumer Key for now, org-specific key stored when admin completes setup
+          const sessionId = crypto.randomBytes(24).toString('hex');
+          sessions.set(sessionId, { accessToken: tokenRes.body.access_token, refreshToken: tokenRes.body.refresh_token, instanceUrl: sfOrgInstanceUrl, tier });
+          if (sessions.size > 100) sessions.delete([...sessions.keys()][0]);
+          
+          // Save subscription to DB
+          if (email) await saveSubscription(email, null, tier);
+          
+          const mcpInstanceUrl = sfOrgInstanceUrl;
+          const mcpUrl = SERVER_URL + '/mcp/' + tier + '?session=' + sessionId + '&instance=' + encodeURIComponent(mcpInstanceUrl);
+          
+          // Show success page with MCP URL
+          return res.send(\`<!DOCTYPE html><html><head><title>Connected! — Platinum Cubed MCP</title>
+<style>
+  body{font-family:-apple-system,sans-serif;background:#0B1829;color:white;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;}
+  .card{background:#132035;border:1px solid #1e3a5f;border-radius:16px;padding:40px;max-width:600px;width:90%;}
+  h1{color:#4CAF50;font-size:24px;margin-bottom:8px;}
+  p{color:#9ab;margin:8px 0;line-height:1.6;}
+  .url-box{background:#0B1829;border:1px solid #2D7DD2;border-radius:8px;padding:16px;margin:20px 0;font-family:monospace;font-size:13px;color:#7BAEDB;word-break:break-all;}
+  .steps{background:#0d1f33;border-radius:10px;padding:20px;margin-top:20px;}
+  .steps h3{color:#7BAEDB;font-size:14px;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:12px;}
+  .step{display:flex;gap:12px;margin:10px 0;color:#cdd;font-size:14px;}
+  .num{background:#2D7DD2;color:white;border-radius:50%;width:22px;height:22px;display:flex;align-items:center;justify-content:center;font-size:12px;flex-shrink:0;}
+  button{background:#2D7DD2;color:white;border:none;padding:10px 20px;border-radius:8px;cursor:pointer;font-size:14px;margin-top:8px;}
+</style></head><body>
+<div class="card">
+  <h1>✅ Connected to Salesforce!</h1>
+  <p>Your MCP server is ready. Add this URL to Claude:</p>
+  <div class="url-box" id="mcpUrl">\${mcpUrl}</div>
+  <button onclick="navigator.clipboard.writeText('\${mcpUrl}').then(()=>this.textContent='Copied!')">Copy URL</button>
+  <div class="steps">
+    <h3>Add to Claude</h3>
+    <div class="step"><div class="num">1</div><span>Open Claude → Settings → Connectors</span></div>
+    <div class="step"><div class="num">2</div><span>Click "Add custom connector"</span></div>
+    <div class="step"><div class="num">3</div><span>Paste the URL above and click Add</span></div>
+  </div>
+</div></body></html>\`);
+        }
+      } catch(setupErr) {
+        console.error('Setup flow error:', setupErr.message);
+      }
+    }
 
     // If MCP flow, generate auth code and redirect back to Claude
     if (isMcpFlow && pendingMcpAuth) {

@@ -43,7 +43,7 @@ async function doCheckout(tier) {
         btn.disabled = false;
       }
     } else if (data.already_subscribed) {
-      window.location.href = '/oauth/start?tier=' + data.tier + '&instance_url=' + encodeURIComponent(data.instance_url || 'https://login.salesforce.com') + '&email=' + encodeURIComponent(email);
+      window.location.href = '/setup?tier=' + data.tier + '&instance_url=' + encodeURIComponent(instanceUrl) + '&email=' + encodeURIComponent(email);
     } else if (data.url) {
       window.location.href = data.url;
     } else {
