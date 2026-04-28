@@ -741,7 +741,7 @@ app.get('/oauth/callback', async (req, res) => {
           const mcpUrl = SERVER_URL + '/mcp/' + tier + '?session=' + sessionId + '&instance=' + encodeURIComponent(mcpInstanceUrl);
           
           // Show success page with MCP URL
-          return res.send(\`<!DOCTYPE html><html><head><title>Connected! — Platinum Cubed MCP</title>
+          const successHtml = `<!DOCTYPE html><html><head><title>Connected — Platinum Cubed MCP</title>
 <style>
   body{font-family:-apple-system,sans-serif;background:#0B1829;color:white;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;}
   .card{background:#132035;border:1px solid #1e3a5f;border-radius:16px;padding:40px;max-width:600px;width:90%;}
@@ -755,17 +755,18 @@ app.get('/oauth/callback', async (req, res) => {
   button{background:#2D7DD2;color:white;border:none;padding:10px 20px;border-radius:8px;cursor:pointer;font-size:14px;margin-top:8px;}
 </style></head><body>
 <div class="card">
-  <h1>✅ Connected to Salesforce!</h1>
+  <h1>Connected to Salesforce!</h1>
   <p>Your MCP server is ready. Add this URL to Claude:</p>
-  <div class="url-box" id="mcpUrl">\${mcpUrl}</div>
-  <button onclick="navigator.clipboard.writeText('\${mcpUrl}').then(()=>this.textContent='Copied!')">Copy URL</button>
+  <div class="url-box" id="mcpUrl">${mcpUrl}</div>
+  <button onclick="navigator.clipboard.writeText('${mcpUrl}').then(()=>this.textContent='Copied!')">Copy URL</button>
   <div class="steps">
     <h3>Add to Claude</h3>
-    <div class="step"><div class="num">1</div><span>Open Claude → Settings → Connectors</span></div>
-    <div class="step"><div class="num">2</div><span>Click "Add custom connector"</span></div>
+    <div class="step"><div class="num">1</div><span>Open Claude - Settings - Connectors</span></div>
+    <div class="step"><div class="num">2</div><span>Click Add custom connector</span></div>
     <div class="step"><div class="num">3</div><span>Paste the URL above and click Add</span></div>
   </div>
-</div></body></html>\`);
+</div></body></html>`;
+          return res.send(successHtml);
         }
       } catch(setupErr) {
         console.error('Setup flow error:', setupErr.message);
